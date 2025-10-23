@@ -1,0 +1,9 @@
+# Development and testing tools
+pytest
+pytest-flask
+pytest-cov
+
+# Code quality
+flake8
+black
+mypy

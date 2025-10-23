@@ -1,0 +1,13 @@
+# Flask and WSGI
+Flask
+Werkzeug
+gunicorn
+
+# PostgreSQL
+psycopg2-binary
+
+# Environment variables
+python-dotenv
+
+# HMAC and cryptography (for signature validation)
+cryptography
