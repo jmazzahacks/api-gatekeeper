@@ -4,6 +4,7 @@ Provides connection pooling and database operations for routes.
 """
 from typing import Optional, List
 from contextlib import contextmanager
+import json
 import psycopg2
 from psycopg2.pool import ThreadedConnectionPool
 from psycopg2.extras import RealDictCursor
@@ -167,6 +168,9 @@ class AuthServiceDB:
             route: Route object to save
         """
         route_dict = route.to_dict()
+        # Convert methods dict to JSON string for JSONB column
+        route_dict['methods'] = json.dumps(route_dict['methods'])
+
         with self.get_cursor() as cursor:
             cursor.execute(
                 """
