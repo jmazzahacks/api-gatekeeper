@@ -79,14 +79,14 @@ class TestRoute:
         """Test creating a basic route."""
         now = int(time.time())
         route = Route(
-            route_id='test-route',
             route_pattern='/api/test',
             service_name='test-service',
             methods={
                 HttpMethod.GET: MethodAuth(auth_required=False)
             },
             created_at=now,
-            updated_at=now
+            updated_at=now,
+            route_id='test-route'
         )
         assert route.route_id == 'test-route'
         assert route.route_pattern == '/api/test'
@@ -97,7 +97,6 @@ class TestRoute:
         """Test creating route with multiple HTTP methods."""
         now = int(time.time())
         route = Route(
-            route_id='test-route',
             route_pattern='/api/test',
             service_name='test-service',
             methods={
@@ -107,6 +106,8 @@ class TestRoute:
             },
             created_at=now,
             updated_at=now
+        ,
+            route_id='test-route'
         )
         assert len(route.methods) == 3
         assert route.methods[HttpMethod.GET].auth_required is False
@@ -118,63 +119,67 @@ class TestRoute:
         now = int(time.time())
         with pytest.raises(ValueError, match="route_pattern must start with /"):
             Route(
-                route_id='test',
-                route_pattern='api/test',
-                service_name='test-service',
-                methods={HttpMethod.GET: MethodAuth(auth_required=False)},
-                created_at=now,
-                updated_at=now
-            )
+            route_pattern='api/test',
+            service_name='test-service',
+            methods={HttpMethod.GET: MethodAuth(auth_required=False)},
+            created_at=now,
+            updated_at=now
+            ,
+            route_id='test'
+        )
 
     def test_validation_wildcard_must_be_at_end(self):
         """Test that wildcard must only appear at the end as /*."""
         now = int(time.time())
         with pytest.raises(ValueError, match="Wildcard .* must only appear at the end"):
             Route(
-                route_id='test',
-                route_pattern='/api/*/test',
-                service_name='test-service',
-                methods={HttpMethod.GET: MethodAuth(auth_required=False)},
-                created_at=now,
-                updated_at=now
-            )
+            route_pattern='/api/*/test',
+            service_name='test-service',
+            methods={HttpMethod.GET: MethodAuth(auth_required=False)},
+            created_at=now,
+            updated_at=now
+            ,
+            route_id='test'
+        )
 
     def test_validation_only_one_wildcard(self):
         """Test that only one wildcard is allowed."""
         now = int(time.time())
         with pytest.raises(ValueError, match="Only one wildcard is allowed"):
             Route(
-                route_id='test',
-                route_pattern='/api/*/*',
-                service_name='test-service',
-                methods={HttpMethod.GET: MethodAuth(auth_required=False)},
-                created_at=now,
-                updated_at=now
-            )
+            route_pattern='/api/*/*',
+            service_name='test-service',
+            methods={HttpMethod.GET: MethodAuth(auth_required=False)},
+            created_at=now,
+            updated_at=now
+            ,
+            route_id='test'
+        )
 
     def test_validation_at_least_one_method_required(self):
         """Test that at least one HTTP method must be defined."""
         now = int(time.time())
         with pytest.raises(ValueError, match="At least one HTTP method must be defined"):
             Route(
-                route_id='test',
                 route_pattern='/api/test',
                 service_name='test-service',
                 methods={},
                 created_at=now,
-                updated_at=now
+                updated_at=now,
+                route_id='test'
             )
 
     def test_matches_exact_path(self):
         """Test exact path matching."""
         now = int(time.time())
         route = Route(
-            route_id='test',
             route_pattern='/api/users',
             service_name='test-service',
             methods={HttpMethod.GET: MethodAuth(auth_required=False)},
             created_at=now,
             updated_at=now
+        ,
+            route_id='test'
         )
         assert route.matches('/api/users') is True
         assert route.matches('/api/users/123') is False
@@ -184,12 +189,13 @@ class TestRoute:
         """Test wildcard path matching."""
         now = int(time.time())
         route = Route(
-            route_id='test',
             route_pattern='/api/users/*',
             service_name='test-service',
             methods={HttpMethod.GET: MethodAuth(auth_required=False)},
             created_at=now,
             updated_at=now
+        ,
+            route_id='test'
         )
         assert route.matches('/api/users/') is True
         assert route.matches('/api/users/123') is True
@@ -200,7 +206,6 @@ class TestRoute:
         """Test getting auth requirements for a specific method."""
         now = int(time.time())
         route = Route(
-            route_id='test',
             route_pattern='/api/test',
             service_name='test-service',
             methods={
@@ -209,6 +214,8 @@ class TestRoute:
             },
             created_at=now,
             updated_at=now
+        ,
+            route_id='test'
         )
         get_auth = route.get_auth_requirements(HttpMethod.GET)
         assert get_auth.auth_required is False
@@ -224,7 +231,6 @@ class TestRoute:
         """Test checking if a method requires authentication."""
         now = int(time.time())
         route = Route(
-            route_id='test',
             route_pattern='/api/test',
             service_name='test-service',
             methods={
@@ -233,6 +239,8 @@ class TestRoute:
             },
             created_at=now,
             updated_at=now
+        ,
+            route_id='test'
         )
         assert route.requires_auth(HttpMethod.GET) is False
         assert route.requires_auth(HttpMethod.POST) is True
@@ -242,7 +250,6 @@ class TestRoute:
         """Test serialization to dictionary."""
         now = int(time.time())
         route = Route(
-            route_id='test-route',
             route_pattern='/api/test',
             service_name='test-service',
             methods={
@@ -251,6 +258,8 @@ class TestRoute:
             },
             created_at=now,
             updated_at=now
+        ,
+            route_id='test-route'
         )
         result = route.to_dict()
         assert result['route_id'] == 'test-route'
@@ -289,10 +298,10 @@ class TestRoute:
         """Test Route.create_new() factory method sets timestamps."""
         before = int(time.time())
         route = Route.create_new(
-            route_id='test-route',
             route_pattern='/api/test',
             service_name='test-service',
-            methods={HttpMethod.GET: MethodAuth(auth_required=False)}
+            methods={HttpMethod.GET: MethodAuth(auth_required=False)},
+            route_id='test-route'
         )
         after = int(time.time())
 

@@ -5,12 +5,12 @@
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
 CREATE TABLE IF NOT EXISTS routes (
-    route_id TEXT PRIMARY KEY,
+    route_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     route_pattern TEXT NOT NULL,
     service_name TEXT NOT NULL,
     methods JSONB NOT NULL,
-    created_at BIGINT NOT NULL,
-    updated_at BIGINT NOT NULL,
+    created_at BIGINT NOT NULL DEFAULT extract(epoch from now())::bigint,
+    updated_at BIGINT NOT NULL DEFAULT extract(epoch from now())::bigint,
 
     -- Constraints
     CONSTRAINT route_pattern_format CHECK (route_pattern ~ '^/'),

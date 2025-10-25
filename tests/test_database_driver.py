@@ -29,24 +29,25 @@ class TestSaveRoute:
     def test_save_new_route(self, clean_db):
         """Test saving a new route."""
         route = Route.create_new(
-            route_id='test-route-1',
             route_pattern='/api/test',
             service_name='test-service',
             methods={HttpMethod.GET: MethodAuth(auth_required=False)}
         )
 
-        clean_db.save_route(route)
+        route_id = clean_db.save_route(route)
 
-        loaded = clean_db.load_route_by_id('test-route-1')
+        assert route_id is not None
+        assert route.route_id == route_id
+
+        loaded = clean_db.load_route_by_id(route_id)
         assert loaded is not None
-        assert loaded.route_id == 'test-route-1'
+        assert loaded.route_id == route_id
         assert loaded.route_pattern == '/api/test'
         assert loaded.service_name == 'test-service'
 
     def test_save_route_with_multiple_methods(self, clean_db):
         """Test saving route with multiple HTTP methods."""
         route = Route.create_new(
-            route_id='test-route-multi',
             route_pattern='/api/users/*',
             service_name='user-service',
             methods={
@@ -56,9 +57,9 @@ class TestSaveRoute:
             }
         )
 
-        clean_db.save_route(route)
+        route_id = clean_db.save_route(route)
 
-        loaded = clean_db.load_route_by_id('test-route-multi')
+        loaded = clean_db.load_route_by_id(route_id)
         assert loaded is not None
         assert len(loaded.methods) == 3
         assert loaded.methods[HttpMethod.GET].auth_required is False
@@ -68,24 +69,24 @@ class TestSaveRoute:
     def test_save_route_upsert_updates_existing(self, clean_db):
         """Test that saving an existing route updates it (upsert behavior)."""
         route = Route.create_new(
-            route_id='test-route-upsert',
             route_pattern='/api/test',
             service_name='service-v1',
             methods={HttpMethod.GET: MethodAuth(auth_required=False)}
         )
-        clean_db.save_route(route)
+        route_id = clean_db.save_route(route)
 
         time.sleep(1)
 
+        # Update route with same ID
         updated_route = Route.create_new(
-            route_id='test-route-upsert',
             route_pattern='/api/test/v2',
             service_name='service-v2',
-            methods={HttpMethod.POST: MethodAuth(auth_required=True, auth_type=AuthType.HMAC)}
+            methods={HttpMethod.POST: MethodAuth(auth_required=True, auth_type=AuthType.HMAC)},
+            route_id=route_id
         )
         clean_db.save_route(updated_route)
 
-        loaded = clean_db.load_route_by_id('test-route-upsert')
+        loaded = clean_db.load_route_by_id(route_id)
         assert loaded.route_pattern == '/api/test/v2'
         assert loaded.service_name == 'service-v2'
         assert HttpMethod.POST in loaded.methods
@@ -98,20 +99,19 @@ class TestLoadRouteById:
     def test_load_existing_route(self, clean_db):
         """Test loading a route that exists."""
         route = Route.create_new(
-            route_id='test-load-1',
             route_pattern='/api/load',
             service_name='load-service',
             methods={HttpMethod.GET: MethodAuth(auth_required=False)}
         )
-        clean_db.save_route(route)
+        route_id = clean_db.save_route(route)
 
-        loaded = clean_db.load_route_by_id('test-load-1')
+        loaded = clean_db.load_route_by_id(route_id)
         assert loaded is not None
-        assert loaded.route_id == 'test-load-1'
+        assert loaded.route_id == route_id
 
     def test_load_nonexistent_route(self, clean_db):
         """Test loading a route that doesn't exist returns None."""
-        loaded = clean_db.load_route_by_id('nonexistent-route')
+        loaded = clean_db.load_route_by_id('00000000-0000-0000-0000-000000000000')
         assert loaded is None
 
 
@@ -121,30 +121,28 @@ class TestLoadRouteByPattern:
     def test_load_by_exact_pattern(self, clean_db):
         """Test loading route by exact pattern match."""
         route = Route.create_new(
-            route_id='test-pattern-1',
             route_pattern='/api/exact/path',
             service_name='pattern-service',
             methods={HttpMethod.GET: MethodAuth(auth_required=False)}
         )
-        clean_db.save_route(route)
+        route_id = clean_db.save_route(route)
 
         loaded = clean_db.load_route_by_pattern('/api/exact/path')
         assert loaded is not None
-        assert loaded.route_id == 'test-pattern-1'
+        assert loaded.route_id == route_id
 
     def test_load_by_wildcard_pattern(self, clean_db):
         """Test loading route by wildcard pattern."""
         route = Route.create_new(
-            route_id='test-pattern-wildcard',
             route_pattern='/api/users/*',
             service_name='user-service',
             methods={HttpMethod.GET: MethodAuth(auth_required=False)}
         )
-        clean_db.save_route(route)
+        route_id = clean_db.save_route(route)
 
         loaded = clean_db.load_route_by_pattern('/api/users/*')
         assert loaded is not None
-        assert loaded.route_id == 'test-pattern-wildcard'
+        assert loaded.route_id == route_id
 
     def test_load_by_pattern_not_found(self, clean_db):
         """Test loading by pattern that doesn't exist returns None."""
@@ -158,19 +156,16 @@ class TestLoadRoutesByService:
     def test_load_multiple_routes_for_service(self, clean_db):
         """Test loading all routes for a specific service."""
         route1 = Route.create_new(
-            route_id='service1-route1',
             route_pattern='/api/v1/users',
             service_name='user-service',
             methods={HttpMethod.GET: MethodAuth(auth_required=False)}
         )
         route2 = Route.create_new(
-            route_id='service1-route2',
             route_pattern='/api/v1/users/*',
             service_name='user-service',
             methods={HttpMethod.POST: MethodAuth(auth_required=True, auth_type=AuthType.HMAC)}
         )
         route3 = Route.create_new(
-            route_id='service2-route1',
             route_pattern='/api/v1/posts',
             service_name='post-service',
             methods={HttpMethod.GET: MethodAuth(auth_required=False)}
@@ -196,32 +191,29 @@ class TestLoadAllRoutes:
     def test_load_all_routes(self, clean_db):
         """Test loading all routes from database."""
         route1 = Route.create_new(
-            route_id='all-route-1',
             route_pattern='/api/route1',
             service_name='service-a',
             methods={HttpMethod.GET: MethodAuth(auth_required=False)}
         )
         route2 = Route.create_new(
-            route_id='all-route-2',
             route_pattern='/api/route2',
             service_name='service-b',
             methods={HttpMethod.POST: MethodAuth(auth_required=True, auth_type=AuthType.HMAC)}
         )
         route3 = Route.create_new(
-            route_id='all-route-3',
             route_pattern='/api/route3',
             service_name='service-a',
             methods={HttpMethod.DELETE: MethodAuth(auth_required=True, auth_type=AuthType.API_KEY)}
         )
 
-        clean_db.save_route(route1)
-        clean_db.save_route(route2)
-        clean_db.save_route(route3)
+        id1 = clean_db.save_route(route1)
+        id2 = clean_db.save_route(route2)
+        id3 = clean_db.save_route(route3)
 
         all_routes = clean_db.load_all_routes()
         assert len(all_routes) == 3
         route_ids = {r.route_id for r in all_routes}
-        assert route_ids == {'all-route-1', 'all-route-2', 'all-route-3'}
+        assert route_ids == {id1, id2, id3}
 
     def test_load_all_routes_empty_database(self, clean_db):
         """Test loading all routes from empty database returns empty list."""
@@ -235,57 +227,52 @@ class TestFindMatchingRoutes:
     def test_find_exact_match(self, clean_db):
         """Test finding route with exact path match."""
         route = Route.create_new(
-            route_id='exact-match',
             route_pattern='/api/users',
             service_name='user-service',
             methods={HttpMethod.GET: MethodAuth(auth_required=False)}
         )
-        clean_db.save_route(route)
+        route_id = clean_db.save_route(route)
 
         matches = clean_db.find_matching_routes('/api/users')
         assert len(matches) == 1
-        assert matches[0].route_id == 'exact-match'
+        assert matches[0].route_id == route_id
 
     def test_find_wildcard_match(self, clean_db):
         """Test finding route with wildcard match."""
         route = Route.create_new(
-            route_id='wildcard-match',
             route_pattern='/api/users/*',
             service_name='user-service',
             methods={HttpMethod.GET: MethodAuth(auth_required=False)}
         )
-        clean_db.save_route(route)
+        route_id = clean_db.save_route(route)
 
         matches = clean_db.find_matching_routes('/api/users/123')
         assert len(matches) == 1
-        assert matches[0].route_id == 'wildcard-match'
+        assert matches[0].route_id == route_id
 
     def test_find_multiple_matches(self, clean_db):
         """Test finding multiple routes that match a path."""
         route1 = Route.create_new(
-            route_id='match-exact',
             route_pattern='/api/users/123',
             service_name='user-service',
             methods={HttpMethod.GET: MethodAuth(auth_required=False)}
         )
         route2 = Route.create_new(
-            route_id='match-wildcard',
             route_pattern='/api/users/*',
             service_name='user-service',
             methods={HttpMethod.POST: MethodAuth(auth_required=True, auth_type=AuthType.HMAC)}
         )
-        clean_db.save_route(route1)
-        clean_db.save_route(route2)
+        id1 = clean_db.save_route(route1)
+        id2 = clean_db.save_route(route2)
 
         matches = clean_db.find_matching_routes('/api/users/123')
         assert len(matches) == 2
         route_ids = {r.route_id for r in matches}
-        assert route_ids == {'match-exact', 'match-wildcard'}
+        assert route_ids == {id1, id2}
 
     def test_find_no_matches(self, clean_db):
         """Test finding routes when no matches exist."""
         route = Route.create_new(
-            route_id='no-match',
             route_pattern='/api/users',
             service_name='user-service',
             methods={HttpMethod.GET: MethodAuth(auth_required=False)}
@@ -302,22 +289,21 @@ class TestDeleteRoute:
     def test_delete_existing_route(self, clean_db):
         """Test deleting a route that exists."""
         route = Route.create_new(
-            route_id='delete-me',
             route_pattern='/api/delete',
             service_name='delete-service',
             methods={HttpMethod.GET: MethodAuth(auth_required=False)}
         )
-        clean_db.save_route(route)
+        route_id = clean_db.save_route(route)
 
-        result = clean_db.delete_route('delete-me')
+        result = clean_db.delete_route(route_id)
         assert result is True
 
-        loaded = clean_db.load_route_by_id('delete-me')
+        loaded = clean_db.load_route_by_id(route_id)
         assert loaded is None
 
     def test_delete_nonexistent_route(self, clean_db):
         """Test deleting a route that doesn't exist returns False."""
-        result = clean_db.delete_route('nonexistent-route')
+        result = clean_db.delete_route('00000000-0000-0000-0000-000000000000')
         assert result is False
 
 
@@ -327,7 +313,6 @@ class TestDatabaseIsolation:
     def test_isolation_test1(self, clean_db):
         """First test that creates data."""
         route = Route.create_new(
-            route_id='isolation-1',
             route_pattern='/api/isolation1',
             service_name='isolation-service',
             methods={HttpMethod.GET: MethodAuth(auth_required=False)}

@@ -1,0 +1,46 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "api-auth-service"
+version = "0.1.0"
+description = "API authentication service for nginx auth_request module"
+requires-python = ">=3.13"
+dependencies = [
+    "Flask",
+    "Werkzeug",
+    "gunicorn",
+    "psycopg2-binary",
+    "python-dotenv",
+    "cryptography",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-flask",
+    "pytest-cov",
+    "flake8",
+    "black",
+    "mypy",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+python_classes = "Test*"
+python_functions = "test_*"
+
+[tool.black]
+line-length = 100
+target-version = ['py313']
+
+[tool.mypy]
+python_version = "3.13"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
