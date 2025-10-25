@@ -6,11 +6,10 @@ Usage:
   python scripts/create_route.py
 """
 
-import os
 import sys
 from dotenv import load_dotenv
 
-from src.database import AuthServiceDB
+from src.utils import get_db_connection
 from src.models.route import Route, HttpMethod
 from src.models.method_auth import MethodAuth, AuthType
 
@@ -86,31 +85,10 @@ def main():
     print("=" * 60)
     print("Create New Route")
     print("=" * 60)
+    print()
 
-    # Get database connection info
-    db_host = os.environ.get('POSTGRES_HOST', 'localhost')
-    db_name = os.environ.get('API_AUTH_ADMIN_PG_DB', 'api_auth_admin')
-    db_user = os.environ.get('API_AUTH_ADMIN_PG_USER', 'api_auth_admin')
-    db_password = os.environ.get('API_AUTH_ADMIN_PG_PASSWORD')
-
-    if not db_password:
-        print("Error: API_AUTH_ADMIN_PG_PASSWORD environment variable is required")
-        sys.exit(1)
-
-    print(f"\nConnecting to database '{db_name}' at {db_host}...")
-
-    try:
-        db = AuthServiceDB(
-            db_host=db_host,
-            db_name=db_name,
-            db_user=db_user,
-            db_password=db_password
-        )
-    except Exception as e:
-        print(f"Error connecting to database: {e}")
-        sys.exit(1)
-
-    print("✓ Connected\n")
+    # Connect to database
+    db = get_db_connection()
 
     # Get route information
     print("Route Information")
