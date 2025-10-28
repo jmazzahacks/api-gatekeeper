@@ -72,8 +72,11 @@ def db(test_db_config, ensure_test_db_exists):
 
     yield database
 
-    # Cleanup: Delete all routes after each test for isolation
+    # Cleanup: Delete all data after each test for isolation
+    # Order matters due to foreign key constraints
     with database.get_cursor() as cursor:
+        cursor.execute("DELETE FROM client_permissions")
+        cursor.execute("DELETE FROM clients")
         cursor.execute("DELETE FROM routes")
 
     database.close()
@@ -86,5 +89,7 @@ def clean_db(db):
     Use this fixture when you want to ensure a completely clean state.
     """
     with db.get_cursor() as cursor:
+        cursor.execute("DELETE FROM client_permissions")
+        cursor.execute("DELETE FROM clients")
         cursor.execute("DELETE FROM routes")
     return db
