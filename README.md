@@ -4,13 +4,16 @@ A flexible authentication and authorization service designed to work with nginx'
 
 ## Features
 
-- **Multiple Authentication Methods**: API Key (simple) or HMAC signatures (secure)
+- **Multiple Authentication Methods**: API Key (simple) or HMAC-SHA256 signatures (secure)
 - **Route-Based Protection**: Define which endpoints require authentication
 - **Method-Level Permissions**: Control access per HTTP method (GET, POST, DELETE, etc.)
 - **Client Management**: Issue credentials and manage client lifecycle
 - **Flexible Permissions**: Grant specific clients access to specific routes with specific methods
+- **Nginx Integration**: Works seamlessly with nginx `auth_request` directive
+- **Flask HTTP Endpoint**: Production-ready authorization service on port 7843
 - **Database-Driven**: All configuration in PostgreSQL - no code changes needed
 - **Complete Management Scripts**: Interactive CLI tools for all operations
+- **Comprehensive Testing**: 151 tests with 100% pass rate
 
 ## Architecture
 
@@ -69,6 +72,52 @@ python dev_scripts/setup_database.py --test-db
 ```
 
 See [DATABASE_SETUP.md](DATABASE_SETUP.md) for detailed setup instructions.
+
+## Running the Server
+
+Start the Flask authorization service:
+
+```bash
+# Load environment variables and start server
+set -a && source .env && set +a
+source bin/activate
+python src/app.py
+```
+
+The server starts on **port 7843** with two endpoints:
+- **`/authz`**: Authorization endpoint (for nginx auth_request)
+- **`/health`**: Health check endpoint (for monitoring)
+
+### Testing the Server
+
+```bash
+# Health check
+curl http://localhost:7843/health
+
+# Test authorization (requires X-Original-URI and X-Original-Method headers)
+curl -v http://localhost:7843/authz \
+  -H "X-Original-URI: /api/test" \
+  -H "X-Original-Method: GET" \
+  -H "Authorization: Bearer your-api-key"
+```
+
+### Setup Test Data
+
+Create sample routes and clients for testing:
+
+```bash
+source bin/activate
+python scripts/setup_test_data.py
+```
+
+This creates:
+- Public route (`/api/public`)
+- API key protected route (`/api/protected`)
+- HMAC protected route (`/api/secure`)
+- Test clients with credentials
+- Appropriate permissions
+
+The script outputs curl commands for testing each scenario.
 
 ## Management Scripts
 
@@ -271,7 +320,7 @@ source bin/activate
 python -m pytest
 
 # Run specific test file
-python -m pytest tests/test_client_operations.py
+python -m pytest tests/test_flask_app.py
 
 # Run with coverage
 python -m pytest --cov=src tests/
@@ -283,23 +332,36 @@ python -m pytest -v
 **Test database:**
 - All tests use `api_auth_admin_test` database
 - Automatic cleanup between tests
-- 74 tests covering routes, clients, and permissions
+- **151 tests** covering:
+  - Routes, clients, and permissions (74 tests)
+  - Authorization engine (21 tests)
+  - Authentication handlers (40 tests)
+  - Flask HTTP endpoint (16 tests)
 
 ## Project Structure
 
 ```
 api-gatekeeper/
 ├── src/
+│   ├── app.py               # Flask HTTP application
 │   ├── models/              # Data models
 │   │   ├── route.py         # Route with pattern matching
 │   │   ├── method_auth.py   # Auth requirements per HTTP method
 │   │   ├── client.py        # Client with credentials
 │   │   └── client_permission.py  # Permission linking
+│   ├── auth/                # Authorization & authentication
+│   │   ├── models.py        # AuthResult model
+│   │   ├── authorizer.py    # Authorization engine
+│   │   ├── hmac_handler.py  # HMAC signature validation
+│   │   ├── api_key_handler.py   # API key extraction
+│   │   └── request_signer.py    # Test utility for HMAC
 │   ├── database/            # Database layer
 │   │   ├── schema.sql       # PostgreSQL schema
 │   │   └── driver.py        # CRUD operations with connection pooling
 │   └── utils/               # Utilities
 │       └── db_connection.py # Database connection helper
+├── nginx/                   # Nginx integration
+│   └── auth-example.conf    # Example nginx config with auth_request
 ├── scripts/                 # Management scripts
 │   ├── create_route.py      # Create routes
 │   ├── list_routes.py       # List all routes
@@ -309,12 +371,16 @@ api-gatekeeper/
 │   ├── delete_client.py     # Delete clients
 │   ├── grant_permission.py  # Grant permissions
 │   ├── list_permissions.py  # List permissions
-│   └── revoke_permission.py # Revoke permissions
-├── tests/                   # Test suite
+│   ├── revoke_permission.py # Revoke permissions
+│   └── setup_test_data.py   # Create test data
+├── tests/                   # Test suite (151 tests)
 │   ├── conftest.py          # Test fixtures
 │   ├── test_database_driver.py      # Route CRUD tests
 │   ├── test_client_operations.py    # Client/permission tests
-│   └── test_route_model.py          # Model validation tests
+│   ├── test_route_model.py          # Model validation tests
+│   ├── test_authorizer.py           # Authorization engine tests
+│   ├── test_auth_handlers.py        # Authentication handler tests
+│   └── test_flask_app.py            # Flask endpoint tests
 └── dev_scripts/             # Development utilities
     └── setup_database.py    # Database initialization
 ```
@@ -338,6 +404,7 @@ No code changes or service restarts required.
 
 ### Optional (with defaults)
 
+- `PORT`: Flask server port (default: `7843`)
 - `POSTGRES_HOST`: PostgreSQL host (default: `localhost`)
 - `POSTGRES_PORT`: PostgreSQL port (default: `5432`)
 - `POSTGRES_USER`: PostgreSQL superuser (default: `postgres`)
@@ -400,35 +467,61 @@ Currently using `schema.sql` with `CREATE TABLE IF NOT EXISTS`. For production, 
 
 ### Implemented ✓
 
+**Foundation (Complete)**
 - [x] Route configuration with method-level auth requirements
 - [x] Client management with multiple credential types
 - [x] Permission system linking clients to routes
 - [x] Complete management scripts (CLI)
-- [x] Comprehensive test suite (74 tests)
 - [x] Database schema with proper constraints
 - [x] Connection pooling and CRUD operations
 
+**Phase 1: Authorization Engine (Complete)**
+- [x] AuthResult model with serialization
+- [x] Authorizer class with route matching and permission checking
+- [x] Route matching (exact and wildcard with priority rules)
+- [x] Public route support (no authentication)
+- [x] Client status verification (active/suspended/revoked)
+
+**Phase 2: Authentication Handlers (Complete)**
+- [x] HMAC-SHA256 signature validation (byteforge-hmac integration)
+- [x] API key extraction (headers and query parameters)
+- [x] DatabaseSecretProvider for HMAC secret lookups
+- [x] RequestSigner utility for testing
+
+**Phase 3: Flask HTTP Endpoint (Complete)**
+- [x] Flask application with `/authz` endpoint
+- [x] Nginx `auth_request` integration
+- [x] Health check endpoint (`/health`)
+- [x] Request/response header handling
+- [x] Comprehensive test suite (151 tests total)
+- [x] Nginx configuration example
+- [x] Test data setup utility
+
 ### In Progress
 
-- [ ] Authorization engine (request validation logic)
-- [ ] Authentication handlers (API key and HMAC validation)
-- [ ] Flask HTTP endpoint for nginx integration
-- [ ] Request signing utilities for testing
+**Phase 4: Production Readiness**
+- [ ] Docker deployment setup
+- [ ] Gunicorn production configuration
+- [ ] Performance optimization (caching)
+- [ ] Monitoring and metrics (Prometheus)
+- [ ] Structured logging
 
 ### Planned
 
+**Phase 5: Enhancements**
 - [ ] Rate limiting per client
 - [ ] Audit logging
 - [ ] Credential rotation policies
 - [ ] Admin REST API
-- [ ] Monitoring and metrics
-- [ ] Caching layer for performance
+- [ ] Web dashboard
+- [ ] Client SDKs
 
 ## Documentation
 
 - [ARCHITECTURE.md](ARCHITECTURE.md) - System architecture and design principles
 - [DATABASE_SETUP.md](DATABASE_SETUP.md) - Detailed database setup instructions
-- [PROJECT_GOALS.txt](PROJECT_GOALS.txt) - Original project goals and motivation
+- [ROADMAP.md](ROADMAP.md) - Development roadmap with phase breakdown
+- [nginx/auth-example.conf](nginx/auth-example.conf) - Nginx integration example
 
 ## Contributing
 
@@ -450,4 +543,4 @@ For issues and questions:
 
 ---
 
-**Status**: Core functionality complete. Authorization engine and HTTP endpoint in development.
+**Status**: Phases 1-3 complete. Flask HTTP endpoint operational. Ready for nginx integration and production deployment.
