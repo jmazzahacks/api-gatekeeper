@@ -3,7 +3,7 @@ Unit tests for the Authorization Engine.
 CRITICAL: All tests use the api_auth_admin_test database via fixtures.
 """
 import pytest
-from src.auth import Authorizer, AuthResult
+from src.auth import Authorizer, AuthResult, RequestSigner
 from src.models.route import Route, HttpMethod
 from src.models.method_auth import MethodAuth, AuthType
 from src.models.client import Client, ClientStatus
@@ -206,7 +206,7 @@ class TestAuthenticatedAccess:
         result = authorizer.authorize_request(
             '/api/protected',
             HttpMethod.GET,
-            api_key='test-api-key-123'
+            headers={'Authorization': 'Bearer test-api-key-123'}
         )
 
         assert result.allowed is True
@@ -222,7 +222,7 @@ class TestAuthenticatedAccess:
         result = authorizer.authorize_request(
             '/api/protected',
             HttpMethod.GET,
-            api_key='test-api-key-123'
+            headers={'Authorization': 'Bearer test-api-key-123'}
         )
 
         assert result.allowed is False
@@ -235,7 +235,7 @@ class TestAuthenticatedAccess:
         result = authorizer.authorize_request(
             '/api/protected',
             HttpMethod.GET,
-            api_key='invalid-key'
+            headers={'Authorization': 'Bearer invalid-key'}
         )
 
         assert result.allowed is False
@@ -264,7 +264,7 @@ class TestAuthenticatedAccess:
         result = authorizer.authorize_request(
             '/api/protected',
             HttpMethod.POST,
-            api_key='test-api-key-123'
+            headers={'Authorization': 'Bearer test-api-key-123'}
         )
 
         assert result.allowed is False
@@ -307,7 +307,7 @@ class TestClientStatus:
         result = authorizer.authorize_request(
             '/api/status-test',
             HttpMethod.GET,
-            api_key='suspended-key'
+            headers={'Authorization': 'Bearer suspended-key'}
         )
 
         assert result.allowed is False
@@ -334,7 +334,7 @@ class TestClientStatus:
         result = authorizer.authorize_request(
             '/api/status-test',
             HttpMethod.GET,
-            api_key='revoked-key'
+            headers={'Authorization': 'Bearer revoked-key'}
         )
 
         assert result.allowed is False
@@ -361,7 +361,7 @@ class TestClientStatus:
         result = authorizer.authorize_request(
             '/api/status-test',
             HttpMethod.GET,
-            api_key='active-key'
+            headers={'Authorization': 'Bearer active-key'}
         )
 
         assert result.allowed is True
@@ -397,11 +397,19 @@ class TestSharedSecretAuth:
         )
         clean_db.save_permission(permission)
 
+        # Sign the request using RequestSigner
+        signer = RequestSigner(
+            client_id=client.client_id,
+            secret_key='test-shared-secret'
+        )
+        auth_header = signer.sign_post('/api/hmac-test', '{"test": "data"}')
+
         authorizer = Authorizer(clean_db)
         result = authorizer.authorize_request(
             '/api/hmac-test',
             HttpMethod.POST,
-            shared_secret='test-shared-secret'
+            headers={'Authorization': auth_header},
+            body='{"test": "data"}'
         )
 
         assert result.allowed is True
@@ -417,11 +425,19 @@ class TestSharedSecretAuth:
         )
         clean_db.save_route(route)
 
+        # Sign with wrong secret
+        signer = RequestSigner(
+            client_id='fake-client-id',
+            secret_key='wrong-secret'
+        )
+        auth_header = signer.sign_post('/api/hmac-test', '{"test": "data"}')
+
         authorizer = Authorizer(clean_db)
         result = authorizer.authorize_request(
             '/api/hmac-test',
             HttpMethod.POST,
-            shared_secret='invalid-secret'
+            headers={'Authorization': auth_header},
+            body='{"test": "data"}'
         )
 
         assert result.allowed is False

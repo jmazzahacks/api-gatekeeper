@@ -13,14 +13,36 @@ This document outlines the development plan for completing the API Gatekeeper sy
   - Route management (create, list, delete)
   - Client management (create, list, delete)
   - Permission management (grant, list, revoke)
-- **Test Suite**: 74 comprehensive unit tests with test database isolation
+- **Test Suite**: 135 comprehensive unit tests with test database isolation
 - **Documentation**: README, ARCHITECTURE, DATABASE_SETUP guides
 
 **Bottom line**: Configuration layer is complete. Can define routes, create clients, and grant permissions.
 
+### ✅ Phase 1: Authorization Engine (COMPLETED)
+
+- **AuthResult Model**: Complete decision response model with serialization
+- **Authorizer Class**: Full authorization flow with route matching and permission checking
+- **Route Matching**: Exact and wildcard matching with proper priority rules
+- **Public Routes**: Support for routes with no authentication required
+- **Client Status**: Active/suspended/revoked client verification
+- **Permission Verification**: Client + route + method access control
+- **Test Coverage**: 21 comprehensive authorizer tests
+
+### ✅ Phase 2: Authentication Handlers (COMPLETED)
+
+- **HMACHandler**: HMAC-SHA256 signature validation using byteforge-hmac library
+- **DatabaseSecretProvider**: Database integration for HMAC secret lookup
+- **APIKeyHandler**: API key extraction from headers (Bearer/ApiKey/raw) and query parameters
+- **RequestSigner**: Test utility for generating valid HMAC signatures
+- **Updated Authorizer**: Clean interface with headers, body, query_params (no deprecated parameters)
+- **Authentication Priority**: HMAC first (more secure), then API key fallback
+- **Test Coverage**: 40 comprehensive authentication handler tests
+
+**Bottom line**: Core authorization and authentication logic complete. Ready for HTTP integration.
+
 ---
 
-## Phase 1: Authorization Engine (Core Logic) 🎯 **CURRENT PHASE**
+## Phase 1: Authorization Engine (Core Logic) ✅ **COMPLETED**
 
 **Goal**: Build the decision-making logic that determines allow/deny for requests
 
@@ -168,15 +190,15 @@ def _check_permission(self, client, route, method):
 
 ### Success Criteria
 
-- [ ] AuthResult model created
-- [ ] Authorizer class implemented
-- [ ] Route matching logic working (exact and wildcard)
-- [ ] Public route handling (no auth required)
-- [ ] API key authentication (basic validation)
-- [ ] Client status checking (active/suspended/revoked)
-- [ ] Permission verification (client + route + method)
-- [ ] Comprehensive test suite (30+ tests, all passing)
-- [ ] Integration with existing database models
+- [x] AuthResult model created
+- [x] Authorizer class implemented
+- [x] Route matching logic working (exact and wildcard)
+- [x] Public route handling (no auth required)
+- [x] API key authentication (basic validation)
+- [x] Client status checking (active/suspended/revoked)
+- [x] Permission verification (client + route + method)
+- [x] Comprehensive test suite (30+ tests, all passing)
+- [x] Integration with existing database models
 
 ### Estimated Effort
 
@@ -186,7 +208,7 @@ def _check_permission(self, client, route, method):
 
 ---
 
-## Phase 2: Authentication Handlers (Crypto & Validation)
+## Phase 2: Authentication Handlers (Crypto & Validation) ✅ **COMPLETED**
 
 **Goal**: Implement real credential validation with cryptographic signatures
 
@@ -337,14 +359,14 @@ class AuthConfig:
 
 ### Success Criteria
 
-- [ ] API key extraction from headers and query params
-- [ ] HMAC signature computation (HMAC-SHA256)
-- [ ] Timestamp validation with configurable tolerance
-- [ ] Body hash validation
-- [ ] Constant-time signature comparison
-- [ ] Request signing utility for tests
-- [ ] Integration with authorizer
-- [ ] Test suite for all authentication paths
+- [x] API key extraction from headers and query params
+- [x] HMAC signature computation (HMAC-SHA256)
+- [x] Timestamp validation with configurable tolerance
+- [x] Body hash validation
+- [x] Constant-time signature comparison
+- [x] Request signing utility for tests
+- [x] Integration with authorizer
+- [x] Test suite for all authentication paths
 
 ### Estimated Effort
 
@@ -354,7 +376,7 @@ class AuthConfig:
 
 ---
 
-## Phase 3: Flask HTTP Endpoint (Nginx Integration)
+## Phase 3: Flask HTTP Endpoint (Nginx Integration) 🎯 **CURRENT PHASE**
 
 **Goal**: Create the web service nginx calls for auth decisions
 
@@ -722,27 +744,29 @@ python scripts/rotate_client_credentials.py <client_id>
 
 ## Timeline Estimate
 
-| Phase | Effort | Dependencies |
-|-------|--------|--------------|
-| Phase 1: Authorization Engine | 1 day | None (ready to start) |
-| Phase 2: Authentication Handlers | 1 day | Phase 1 |
-| Phase 3: Flask HTTP Endpoint | 1 day | Phase 2 |
-| Phase 4: Production Readiness | 2 days | Phase 3 |
-| **Core Complete** | **5 days** | |
-| Phase 5: Enhancements | Ongoing | Phase 4 |
+| Phase | Effort | Status | Dependencies |
+|-------|--------|--------|--------------|
+| Phase 1: Authorization Engine | 1 day | ✅ COMPLETED | None |
+| Phase 2: Authentication Handlers | 1 day | ✅ COMPLETED | Phase 1 |
+| Phase 3: Flask HTTP Endpoint | 1 day | 🎯 IN PROGRESS | Phase 2 |
+| Phase 4: Production Readiness | 2 days | ⏳ Pending | Phase 3 |
+| **Core Complete** | **5 days** | **~2 days done** | |
+| Phase 5: Enhancements | Ongoing | ⏳ Pending | Phase 4 |
 
-**Total to production-ready**: ~1 week of focused development
+**Progress**: 2 of 4 core phases completed (~40% to production-ready)
 
 ---
 
 ## Next Steps
 
-**Immediate**: Start Phase 1 - Authorization Engine
+**Immediate**: Start Phase 3 - Flask HTTP Endpoint
 
-1. Create `src/auth/` directory
-2. Build `AuthResult` model
-3. Implement `Authorizer` class
-4. Write comprehensive tests
-5. Validate with existing database configuration
+1. Create Flask application with `/auth` endpoint
+2. Implement nginx header extraction
+3. Integrate with Authorizer
+4. Add health check endpoint
+5. Write Flask test client tests
+6. Create nginx configuration example
+7. Set up Docker deployment
 
-**After Phase 1**: Review and plan Phase 2 (Authentication Handlers)
+**After Phase 3**: Review and plan Phase 4 (Production Readiness)

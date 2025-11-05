@@ -11,3 +11,4 @@ python-dotenv
 
 # HMAC and cryptography (for signature validation)
 cryptography
+byteforge-hmac

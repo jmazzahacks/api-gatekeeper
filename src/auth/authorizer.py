@@ -1,11 +1,13 @@
 """
 Authorization engine for API Gatekeeper.
 """
-from typing import Optional, List
+from typing import Optional, List, Dict
 from src.database.driver import AuthServiceDB
 from src.models.route import Route, HttpMethod
 from src.models.client import Client
 from .models import AuthResult
+from .hmac_handler import HMACHandler
+from .api_key_handler import APIKeyHandler
 
 
 class Authorizer:
@@ -21,21 +23,31 @@ class Authorizer:
     6. Return authorization decision with context
     """
 
-    def __init__(self, db: AuthServiceDB):
+    def __init__(
+        self,
+        db: AuthServiceDB,
+        hmac_handler: Optional[HMACHandler] = None,
+        api_key_handler: Optional[APIKeyHandler] = None
+    ):
         """
         Initialize the authorizer.
 
         Args:
             db: Database driver instance
+            hmac_handler: Optional HMAC authentication handler (created if not provided)
+            api_key_handler: Optional API key handler (created if not provided)
         """
         self.db = db
+        self.hmac_handler = hmac_handler or HMACHandler(db)
+        self.api_key_handler = api_key_handler or APIKeyHandler()
 
     def authorize_request(
         self,
         path: str,
         method: HttpMethod,
-        api_key: Optional[str] = None,
-        shared_secret: Optional[str] = None
+        headers: Optional[Dict[str, str]] = None,
+        body: str = '',
+        query_params: Optional[Dict[str, str]] = None
     ) -> AuthResult:
         """
         Determine if a request should be allowed.
@@ -43,12 +55,17 @@ class Authorizer:
         Args:
             path: Request path (e.g., '/api/users/123')
             method: HTTP method
-            api_key: Optional API key for authentication
-            shared_secret: Optional shared secret for HMAC authentication
+            headers: HTTP headers dict (for extracting auth credentials)
+            body: Request body (for HMAC signature validation)
+            query_params: Query parameters (for API key extraction)
 
         Returns:
             AuthResult with decision and context
         """
+        if headers is None:
+            headers = {}
+        if query_params is None:
+            query_params = {}
         # Step 1: Match routes
         matching_routes = self._match_routes(path)
 
@@ -81,7 +98,7 @@ class Authorizer:
             )
 
         # Step 4: Authentication required - validate credentials
-        client = self._authenticate_client(api_key, shared_secret)
+        client = self._authenticate_client(headers, path, method.value, body, query_params)
 
         if not client:
             return AuthResult(
@@ -158,30 +175,45 @@ class Authorizer:
 
     def _authenticate_client(
         self,
-        api_key: Optional[str],
-        shared_secret: Optional[str]
+        headers: Dict[str, str],
+        path: str,
+        method: str,
+        body: str,
+        query_params: Dict[str, str]
     ) -> Optional[Client]:
         """
-        Authenticate a client using provided credentials.
+        Authenticate a client using credentials from request.
+
+        Tries authentication in order:
+        1. HMAC signature (from Authorization header)
+        2. API key (from Authorization header or query params)
 
         Args:
-            api_key: API key credential
-            shared_secret: Shared secret for HMAC
+            headers: HTTP headers
+            path: Request path
+            method: HTTP method string
+            body: Request body
+            query_params: Query parameters
 
         Returns:
             Client if authenticated, None otherwise
         """
-        # Try API key authentication
-        if api_key:
-            client = self.db.load_client_by_api_key(api_key)
+        # Try HMAC authentication first (more secure)
+        auth_header = headers.get('Authorization', '')
+        if auth_header and auth_header.startswith('HMAC '):
+            client = self.hmac_handler.authenticate(
+                auth_header=auth_header,
+                method=method,
+                path=path,
+                body=body
+            )
             if client:
                 return client
 
-        # Try shared secret authentication (HMAC)
-        # Note: In Phase 2, this will validate actual HMAC signature
-        # For now, just check if shared secret exists
-        if shared_secret:
-            client = self.db.load_client_by_shared_secret(shared_secret)
+        # Try API key authentication
+        api_key = self.api_key_handler.extract(headers, query_params)
+        if api_key:
+            client = self.db.load_client_by_api_key(api_key)
             if client:
                 return client
 
