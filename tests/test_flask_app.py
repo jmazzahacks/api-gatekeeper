@@ -35,6 +35,39 @@ class TestHealthEndpoint:
         assert data['status'] == 'healthy'
         assert data['database'] == 'connected'
         assert 'routes_configured' in data
+        assert 'clients_configured' in data
+        assert isinstance(data['routes_configured'], int)
+        assert isinstance(data['clients_configured'], int)
+
+    def test_health_check_with_existing_data(self, client, clean_db):
+        """Test health check reports correct counts."""
+        # Create some routes and clients
+        route1 = Route.create_new(
+            route_pattern='/api/test1',
+            service_name='test-service',
+            methods={HttpMethod.GET: MethodAuth(auth_required=False)}
+        )
+        route2 = Route.create_new(
+            route_pattern='/api/test2',
+            service_name='test-service',
+            methods={HttpMethod.GET: MethodAuth(auth_required=False)}
+        )
+        clean_db.save_route(route1)
+        clean_db.save_route(route2)
+
+        test_client = Client.create_new(
+            client_name='Test Client',
+            api_key='test-key',
+            status=ClientStatus.ACTIVE
+        )
+        clean_db.save_client(test_client)
+
+        response = client.get('/health')
+
+        assert response.status_code == 200
+        data = response.get_json()
+        assert data['routes_configured'] == 2
+        assert data['clients_configured'] == 1
 
 
 class TestAuthzEndpointPublicRoutes:
@@ -468,3 +501,108 @@ class TestAuthzEndpointEdgeCases:
 
         assert response.status_code == 403
         assert b'invalid_credentials' in response.data
+
+
+class TestMetricsEndpoint:
+    """Test /metrics endpoint (Prometheus metrics)."""
+
+    def test_metrics_endpoint_returns_prometheus_format(self, client, clean_db):
+        """Test /metrics returns Prometheus-formatted metrics."""
+        response = client.get('/metrics')
+
+        assert response.status_code == 200
+        assert response.content_type.startswith('text/plain')
+
+        # Check for standard Prometheus metrics
+        data = response.data.decode('utf-8')
+        assert '# HELP' in data
+        assert '# TYPE' in data
+
+    def test_metrics_contains_auth_metrics(self, client, clean_db):
+        """Test /metrics contains our custom authorization metrics."""
+        response = client.get('/metrics')
+
+        assert response.status_code == 200
+        data = response.data.decode('utf-8')
+
+        # Check for our custom metrics
+        assert 'auth_requests_total' in data
+        assert 'auth_duration_seconds' in data
+        assert 'auth_errors_total' in data
+
+    def test_metrics_updates_after_authz_request(self, client, clean_db):
+        """Test metrics are updated after authorization requests."""
+        # Create a public route
+        route = Route.create_new(
+            route_pattern='/api/metrics-test',
+            service_name='test-service',
+            methods={HttpMethod.GET: MethodAuth(auth_required=False)}
+        )
+        clean_db.save_route(route)
+
+        # Get initial metrics
+        response1 = client.get('/metrics')
+        data1 = response1.data.decode('utf-8')
+
+        # Make an authorization request
+        client.get(
+            '/authz',
+            headers={
+                'X-Original-URI': '/api/metrics-test',
+                'X-Original-Method': 'GET'
+            }
+        )
+
+        # Get updated metrics
+        response2 = client.get('/metrics')
+        data2 = response2.data.decode('utf-8')
+
+        # Verify metrics were updated (should contain auth_requests_total)
+        assert 'auth_requests_total' in data2
+
+        # The metrics should contain our route pattern
+        assert '/api/metrics-test' in data2 or 'result="allowed"' in data2
+
+    def test_metrics_tracks_allowed_vs_denied(self, client, clean_db):
+        """Test metrics differentiate between allowed and denied requests."""
+        # Create public route
+        public_route = Route.create_new(
+            route_pattern='/api/public-metrics',
+            service_name='test-service',
+            methods={HttpMethod.GET: MethodAuth(auth_required=False)}
+        )
+        clean_db.save_route(public_route)
+
+        # Create protected route
+        protected_route = Route.create_new(
+            route_pattern='/api/protected-metrics',
+            service_name='test-service',
+            methods={HttpMethod.GET: MethodAuth(auth_required=True, auth_type=AuthType.API_KEY)}
+        )
+        clean_db.save_route(protected_route)
+
+        # Make allowed request
+        client.get(
+            '/authz',
+            headers={
+                'X-Original-URI': '/api/public-metrics',
+                'X-Original-Method': 'GET'
+            }
+        )
+
+        # Make denied request
+        client.get(
+            '/authz',
+            headers={
+                'X-Original-URI': '/api/protected-metrics',
+                'X-Original-Method': 'GET'
+            }
+        )
+
+        # Check metrics
+        response = client.get('/metrics')
+        data = response.data.decode('utf-8')
+
+        # Should have both allowed and denied counters
+        assert 'result="allowed"' in data
+        assert 'result="denied"' in data
