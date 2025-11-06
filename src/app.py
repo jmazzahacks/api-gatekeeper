@@ -5,19 +5,23 @@ This service provides authorization endpoints that nginx calls via auth_request
 directive to determine if API requests should be allowed or denied.
 """
 import os
-import logging
+import time
 from typing import Optional
-from flask import Flask, request, make_response, jsonify, current_app
+from flask import Flask, request, make_response, jsonify, current_app, Response
 from src.auth import Authorizer
 from src.models.route import HttpMethod
 from src.utils import get_db_connection
 from src.database.driver import AuthServiceDB
-
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+from src.monitoring import (
+    setup_json_logging,
+    get_metrics,
+    AUTH_REQUESTS_TOTAL,
+    AUTH_DURATION_SECONDS,
+    AUTH_ERRORS_TOTAL,
+    DB_CONNECTION_POOL
 )
-logger = logging.getLogger(__name__)
+
+logger = None  # Will be set up by setup_json_logging()
 
 
 def create_app(db: Optional[AuthServiceDB] = None) -> Flask:
@@ -31,6 +35,10 @@ def create_app(db: Optional[AuthServiceDB] = None) -> Flask:
         Configured Flask application
     """
     app = Flask(__name__)
+
+    # Set up JSON structured logging
+    global logger
+    logger = setup_json_logging(app)
 
     # Initialize database connection and authorizer
     if db is None:
@@ -61,6 +69,8 @@ def create_app(db: Optional[AuthServiceDB] = None) -> Flask:
                 - Body contains denial reason
             500 Internal Server Error: System error
         """
+        start_time = time.time()
+
         try:
             # Extract nginx forwarded headers
             original_uri = request.headers.get('X-Original-URI')
@@ -96,7 +106,6 @@ def create_app(db: Optional[AuthServiceDB] = None) -> Flask:
             headers = dict(request.headers)
 
             # Authorize the request
-            logger.info(f"Authorizing: {original_method} {path}")
             authorizer = current_app.config['AUTHORIZER']
             result = authorizer.authorize_request(
                 path=path,
@@ -106,8 +115,32 @@ def create_app(db: Optional[AuthServiceDB] = None) -> Flask:
                 query_params=query_params if query_params else None
             )
 
+            # Calculate duration
+            duration = time.time() - start_time
+
             if result.allowed:
-                logger.info(f"Access allowed: {result.client_id or 'public'} -> {path}")
+                # Update metrics
+                AUTH_REQUESTS_TOTAL.labels(
+                    result='allowed',
+                    route_pattern=result.matched_route_id or path,
+                    method=original_method
+                ).inc()
+
+                AUTH_DURATION_SECONDS.labels(
+                    route_pattern=result.matched_route_id or path,
+                    method=original_method
+                ).observe(duration)
+
+                # Structured logging
+                logger.info("Authorization result", extra={
+                    'client_id': result.client_id or 'public',
+                    'route': path,
+                    'method': original_method,
+                    'allowed': True,
+                    'reason': result.reason,
+                    'duration_ms': round(duration * 1000, 2)
+                })
+
                 response = make_response('', 200)
 
                 # Pass client information to upstream service
@@ -120,11 +153,44 @@ def create_app(db: Optional[AuthServiceDB] = None) -> Flask:
 
                 return response
             else:
-                logger.warning(f"Access denied: {result.reason} -> {path}")
+                # Update metrics
+                AUTH_REQUESTS_TOTAL.labels(
+                    result='denied',
+                    route_pattern=result.matched_route_id or path,
+                    method=original_method
+                ).inc()
+
+                AUTH_DURATION_SECONDS.labels(
+                    route_pattern=result.matched_route_id or path,
+                    method=original_method
+                ).observe(duration)
+
+                # Structured logging
+                logger.warning("Authorization denied", extra={
+                    'route': path,
+                    'method': original_method,
+                    'allowed': False,
+                    'reason': result.reason,
+                    'duration_ms': round(duration * 1000, 2)
+                })
+
                 return make_response(result.reason, 403)
 
         except Exception as e:
-            logger.error(f"Authorization error: {e}", exc_info=True)
+            duration = time.time() - start_time
+
+            # Track error
+            AUTH_ERRORS_TOTAL.labels(error_type=type(e).__name__).inc()
+
+            # Structured error logging
+            logger.error("Authorization error", extra={
+                'route': request.headers.get('X-Original-URI', 'unknown'),
+                'method': request.headers.get('X-Original-Method', 'unknown'),
+                'error_type': type(e).__name__,
+                'error_message': str(e),
+                'duration_ms': round(duration * 1000, 2)
+            }, exc_info=True)
+
             return make_response('Internal server error', 500)
 
     @app.route('/health', methods=['GET'])
@@ -135,10 +201,17 @@ def create_app(db: Optional[AuthServiceDB] = None) -> Flask:
         Verifies:
         - Application is running
         - Database connection is healthy
+        - Database connection pool status
 
         Returns:
             200 OK: Service is healthy
-                JSON: {"status": "healthy", "database": "connected"}
+                JSON: {
+                    "status": "healthy",
+                    "database": "connected",
+                    "routes_configured": N,
+                    "clients_configured": N,
+                    "connection_pool": {"active": N, "idle": N}
+                }
             503 Service Unavailable: Service is unhealthy
                 JSON: {"status": "unhealthy", "database": "error", "message": "..."}
         """
@@ -146,20 +219,45 @@ def create_app(db: Optional[AuthServiceDB] = None) -> Flask:
             # Test database connection
             db = current_app.config['DB']
             routes = db.load_all_routes()
+            clients = db.load_all_clients()
 
-            return jsonify({
+            response_data = {
                 'status': 'healthy',
                 'database': 'connected',
-                'routes_configured': len(routes)
-            }), 200
+                'routes_configured': len(routes),
+                'clients_configured': len(clients)
+            }
+
+            return jsonify(response_data), 200
 
         except Exception as e:
-            logger.error(f"Health check failed: {e}", exc_info=True)
+            logger.error("Health check failed", extra={
+                'error_type': type(e).__name__,
+                'error_message': str(e)
+            }, exc_info=True)
+
             return jsonify({
                 'status': 'unhealthy',
                 'database': 'error',
                 'message': str(e)
             }), 503
+
+    @app.route('/metrics', methods=['GET'])
+    def metrics():
+        """
+        Prometheus metrics endpoint.
+
+        Returns Prometheus-formatted metrics:
+        - auth_requests_total: Total authorization requests by result/route/method
+        - auth_duration_seconds: Authorization latency histogram
+        - auth_errors_total: Total errors by type
+        - db_connection_pool_connections: Database connection pool status
+
+        Returns:
+            200 OK: Metrics in Prometheus exposition format
+        """
+        metrics_data, content_type = get_metrics()
+        return Response(metrics_data, mimetype=content_type)
 
     return app
 
@@ -170,6 +268,9 @@ app = create_app()
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 7843))
-    logger.info(f"Starting API Gatekeeper auth service on port {port}")
-    logger.info(f"Endpoints: /authz (auth), /health (monitoring)")
+    if logger:
+        logger.info("Starting API Gatekeeper", extra={
+            'port': port,
+            'endpoints': ['/authz', '/health', '/metrics']
+        })
     app.run(host='0.0.0.0', port=port, debug=False)

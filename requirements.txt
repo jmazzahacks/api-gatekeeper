@@ -12,3 +12,7 @@ python-dotenv
 # HMAC and cryptography (for signature validation)
 cryptography
 byteforge-hmac
+
+# Monitoring and observability
+prometheus-client
+python-json-logger
