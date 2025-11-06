@@ -588,104 +588,172 @@ volumes:
 
 ## Phase 4: Integration & Production Readiness 🎯 **CURRENT PHASE**
 
-**Goal**: Make the system production-ready
+**Goal**: Deploy to production and establish monitoring
 
-### Tasks
+### Completed Tasks
 
-#### 1. Performance Optimization
+#### ✅ 1. Docker Deployment Setup
+- Dockerfile with Gunicorn, 4 workers, port 7843
+- Automated build-publish.sh with version management
+- docker-compose.example.yml for integration
+- .dockerignore for optimized builds
 
-**Caching Layer**:
+#### ✅ 2. Monitoring & Observability
+- **Prometheus metrics**: auth_requests_total, auth_duration_seconds, auth_errors_total, db_connection_pool
+- **Structured JSON logging**: All requests logged with context (client_id, route, method, duration_ms)
+- **Enhanced health checks**: Database connectivity, route/client counts
+- **/metrics endpoint**: Prometheus exposition format
+- **156 comprehensive tests**: Including endpoint tests for /health and /metrics
+
+### Next Priority Tasks
+
+#### 3. Docker Deployment to Production Server
+
+**Prerequisites**:
+- Production server access
+- PostgreSQL database configured
+- Environment variables prepared
+- Port 7843 available
+
+**Deployment Steps**:
+- Build and push Docker image to registry (ghcr.io/jmazzahacks/api-gatekeeper)
+- Pull image on production server
+- Configure environment variables (API_AUTH_ADMIN_PG_PASSWORD, POSTGRES_HOST, etc.)
+- Start container with proper network configuration
+- Verify port accessibility
+- Configure nginx auth_request integration
+
+**Configuration**:
+```bash
+docker run -d \
+  --name api-gatekeeper-auth \
+  -p 7843:7843 \
+  -e API_AUTH_ADMIN_PG_PASSWORD=<password> \
+  -e POSTGRES_HOST=<production-db-host> \
+  -e POSTGRES_PORT=5432 \
+  -e POSTGRES_DB=api_auth_admin \
+  -e POSTGRES_USER=postgres \
+  -e PORT=7843 \
+  --restart unless-stopped \
+  ghcr.io/jmazzahacks/api-gatekeeper:latest
+```
+
+#### 4. Production Testing
+
+**Health & Metrics Verification**:
+- Test `/health` endpoint on production
+- Verify database connectivity in production environment
+- Test `/metrics` endpoint and verify Prometheus format
+- Confirm metrics collection is working
+
+**Authorization Testing**:
+- Test `/authz` endpoint with nginx auth_request
+- Verify public route handling
+- Test API key authentication flow
+- Test HMAC signature validation
+- Verify client headers passed to upstream (X-Auth-Client-ID, etc.)
+- Check structured logging output
+
+**Performance Validation**:
+- Monitor authorization latency
+- Check Prometheus metrics accuracy
+- Verify request/response handling under load
+- Review JSON logs for errors
+
+**Integration Testing**:
+- Nginx auth_request integration
+- Database query performance
+- Connection handling
+- Error scenarios
+
+#### 5. Prometheus Dashboard Design
+
+**Grafana Dashboard Components**:
+
+**Overview Panel**:
+- Total requests (allowed vs denied) - Pie chart
+- Request rate over time - Time series
+- Success rate percentage - Gauge
+
+**Performance Metrics**:
+- Authorization latency (p50, p95, p99) - Graph
+- Request duration histogram - Heatmap
+- Requests per second by route - Bar chart
+
+**Error Tracking**:
+- Error rate over time - Time series
+- Error types breakdown - Table
+- Failed authentication attempts - Counter
+
+**Route Analysis**:
+- Top routes by traffic - Bar chart
+- Route-specific latency - Multi-line graph
+- Allowed vs denied by route - Stacked area
+
+**Client Monitoring**:
+- Active clients - Stat panel
+- Requests per client - Table
+- Client authentication failures - Alert panel
+
+**System Health**:
+- Database connection status - Stat panel
+- Routes configured - Stat panel
+- Uptime - Stat panel
+
+**Alerts to Configure**:
+- High error rate (>5% over 5 minutes)
+- Authorization latency >100ms (p95)
+- Database connectivity issues
+- Unusual spike in denied requests
+
+### Lower Priority (Optional)
+
+#### Performance Optimization
+
+**Caching Layer** (implement if latency is an issue):
 - Cache routes (changes infrequent)
 - Cache client credentials (with TTL)
 - Cache permissions (invalidate on updates)
 - Consider Redis for distributed caching
 
 **Benchmarking**:
-- Measure authorization latency (target: <10ms)
-- Load testing with realistic traffic
+- Measure authorization latency baseline
+- Load testing with realistic traffic patterns
 - Identify and optimize hot paths
 - Database query optimization
 
-#### 2. Monitoring & Observability
+#### Documentation
 
-**Metrics** (Prometheus format):
-- `auth_requests_total{result="allowed|denied"}`
-- `auth_duration_seconds{route, method}`
-- `auth_errors_total{type}`
-- `db_connection_pool{state="active|idle"}`
-
-**Structured Logging**:
-```python
-logger.info("Authorization result", extra={
-    'client_id': result.client_id,
-    'route': path,
-    'method': method,
-    'allowed': result.allowed,
-    'reason': result.reason,
-    'duration_ms': elapsed
-})
-```
-
-**Health Checks**:
-- Database connectivity
-- Connection pool status
-- Cache connectivity (if used)
-
-#### 3. Documentation
-
-**Guides**:
-- Nginx integration guide
+**Guides** (as needed):
+- Nginx integration guide with examples
 - Client SDK examples (Python, JavaScript, cURL)
 - Deployment guide (Docker, Kubernetes)
 - Troubleshooting guide
 
 **API Documentation**:
-- /auth endpoint specification
+- /authz endpoint specification
 - Header requirements
 - Response codes and meanings
 - Example requests/responses
 
-#### 4. CI/CD Pipeline
-
-```yaml
-# .github/workflows/test.yml
-name: Tests
-on: [push, pull_request]
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:16
-    steps:
-      - uses: actions/checkout@v2
-      - name: Setup Python
-        uses: actions/setup-python@v2
-      - name: Install dependencies
-        run: pip install -r requirements.txt -r dev-requirements.txt
-      - name: Run tests
-        run: pytest --cov=src
-      - name: Upload coverage
-        uses: codecov/codecov-action@v2
-```
-
 ### Success Criteria
 
-- [ ] Caching implemented (optional but recommended)
-- [ ] Performance benchmarks documented
-- [ ] Prometheus metrics exposed
-- [ ] Structured logging throughout
-- [ ] Health check endpoint
-- [ ] Complete deployment documentation
-- [ ] CI/CD pipeline configured
-- [ ] Load testing results
+- [x] Docker deployment setup complete
+- [x] Prometheus metrics exposed
+- [x] Structured logging throughout
+- [x] Health check endpoint implemented
+- [ ] Deployed to production server
+- [ ] Production testing completed
+- [ ] Prometheus dashboard created
+- [ ] Monitoring alerts configured
+- [ ] Performance baseline documented
 
 ### Estimated Effort
 
-**Development**: 5-6 hours
-**Documentation**: 3-4 hours
-**Testing/Tuning**: 3-4 hours
-**Total**: 2 days
+**Production Deployment**: 2-3 hours
+**Production Testing**: 2-3 hours
+**Prometheus Dashboard**: 2-3 hours
+**Total**: ~1 day
 
 ---
 
