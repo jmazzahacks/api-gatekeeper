@@ -83,6 +83,9 @@ db.sqlite3-journal
 instance/
 .webassets-cache
 
+# Docker build version tracking
+VERSION
+
 # Scrapy stuff:
 .scrapy
 

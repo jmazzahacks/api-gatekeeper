@@ -1,0 +1,28 @@
+# Example snippet for adding api-gatekeeper auth service to your existing docker-compose.yml
+# Copy the auth-service section below and add it to your existing docker-compose.yml
+
+services:
+  auth-service:
+    image: ghcr.io/jmazzahacks/api-gatekeeper:latest
+    # Or build locally:
+    # build: .
+    container_name: api-gatekeeper-auth
+    ports:
+      - "7843:7843"
+    environment:
+      # Database connection (point to your existing postgres service)
+      API_AUTH_ADMIN_PG_PASSWORD: ${API_AUTH_ADMIN_PG_PASSWORD}
+      POSTGRES_HOST: postgres  # Name of your postgres service
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: api_auth_admin
+      POSTGRES_USER: postgres
+      PORT: 7843
+    depends_on:
+      - postgres  # Your existing postgres service name
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7843/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
