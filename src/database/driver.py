@@ -23,6 +23,7 @@ class AuthServiceDB:
         db_name: str,
         db_user: str,
         db_password: str,
+        db_port: int = 5432,
         min_conn: int = 2,
         max_conn: int = 10
     ):
@@ -34,6 +35,7 @@ class AuthServiceDB:
             db_name: Database name
             db_user: Database user
             db_password: Database password
+            db_port: PostgreSQL port (default: 5432)
             min_conn: Minimum number of connections in pool
             max_conn: Maximum number of connections in pool
         """
@@ -41,6 +43,7 @@ class AuthServiceDB:
             min_conn,
             max_conn,
             host=db_host,
+            port=db_port,
             database=db_name,
             user=db_user,
             password=db_password

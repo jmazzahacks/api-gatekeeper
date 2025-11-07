@@ -8,11 +8,15 @@ import os
 import logging
 from typing import Optional
 from flask import Flask
+from dotenv import load_dotenv
 from src.auth import Authorizer
 from src.utils import get_db_connection
 from src.database.driver import AuthServiceDB
 from src.monitoring import setup_json_logging
 from src.blueprints import authz_bp, health_bp, metrics_bp
+
+# Load environment variables from .env file
+load_dotenv()
 
 logger = None  # Will be set up by setup_json_logging()
 
