@@ -10,9 +10,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Create non-root user for security
-RUN useradd --create-home --shell /bin/bash appuser
-RUN chown -R appuser:appuser /app
-USER appuser
+RUN useradd --create-home --shell /bin/bash gatekeeper
+RUN chown -R gatekeeper:gatekeeper /app
+USER gatekeeper
 
 # Expose the application port
 EXPOSE 7843
