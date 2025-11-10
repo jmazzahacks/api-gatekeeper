@@ -723,12 +723,246 @@ volumes:
 
 **Production Deployment**: ✅ 2-3 hours (COMPLETED)
 **Production Testing**: ✅ 2-3 hours (COMPLETED)
-**Prometheus Dashboard**: 2-3 hours (remaining)
-**Total**: ~1 day (2/3 complete)
+**Prometheus Dashboard**: ✅ 2-3 hours (COMPLETED)
+**Total**: ~1 day ✅ **COMPLETED**
 
 ---
 
-## Phase 5: Enhancement Features (Future)
+## Phase 5: Domain-Based Routing 🎯 **NEXT PRIORITY**
+
+**Goal**: Enable multi-domain support with domain-specific route configurations
+
+**Why this phase**: Support multiple domains/services with a single gatekeeper instance, allowing different access rules per domain without running separate containers.
+
+### Current Limitation
+
+Routes currently match only on **path**, not domain. This means:
+- `/api/users` matches on ANY domain
+- Cannot have different access rules for `api.example.com/users` vs `admin.example.com/users`
+- Would require multiple gatekeeper instances for multi-domain scenarios
+
+### Requirements
+
+**Domain Matching Support**:
+- Add domain field to route configuration
+- Match requests based on domain + path combination
+- Support wildcard domains (`*` for "any domain", `*.example.com` for subdomains)
+- Backward compatible (existing routes with no domain should work)
+
+**Use Cases**:
+- Public API (`api.example.com`) vs Admin API (`admin.example.com`) with different auth rules
+- Multi-tenant applications with domain-per-tenant
+- Development/staging/production environments on different subdomains
+
+### Components to Build
+
+#### 1. Database Schema Migration
+
+**Add domain column to routes table**:
+```sql
+ALTER TABLE routes ADD COLUMN domain TEXT;
+ALTER TABLE routes ADD CONSTRAINT domain_format CHECK (domain IS NULL OR domain ~ '^[a-zA-Z0-9]([a-zA-Z0-9\-\.]*[a-zA-Z0-9])?$|^\*$|^\*\.[a-zA-Z0-9]([a-zA-Z0-9\-\.]*[a-zA-Z0-9])?$');
+
+-- Index for efficient domain+path lookups
+CREATE INDEX idx_routes_domain_pattern ON routes(domain, route_pattern);
+
+-- Update comments
+COMMENT ON COLUMN routes.domain IS 'Domain for route matching. NULL or * = any domain, *.example.com = subdomain wildcard, example.com = exact match';
+```
+
+**Migration script** (`dev_scripts/migrations/001_add_domain_to_routes.py`):
+- Add domain column with default NULL (matches any domain)
+- Existing routes continue to work (backward compatible)
+- Add indexes for performance
+
+#### 2. Model Updates
+
+**Update Route model** (`src/models/route.py`):
+```python
+@dataclass
+class Route:
+    route_id: str
+    route_pattern: str
+    domain: Optional[str]  # NEW: NULL, *, *.example.com, example.com
+    service_name: str
+    methods: Dict[str, MethodAuthRequirement]
+    created_at: int
+    updated_at: int
+```
+
+**Validation logic**:
+- Domain format validation (DNS-compatible, wildcard patterns)
+- Case-insensitive domain matching
+- Wildcard pattern validation
+
+#### 3. Authorization Logic
+
+**Update Authorizer** (`src/auth/authorizer.py`):
+```python
+def authorize_request(
+    self,
+    path: str,
+    method: HttpMethod,
+    domain: Optional[str] = None,  # NEW parameter
+    headers: Optional[Dict[str, str]] = None,
+    body: str = '',
+    query_params: Optional[Dict[str, str]] = None
+) -> AuthResult:
+    # Match routes by domain AND path
+    matching_routes = self._match_routes(path, domain)
+```
+
+**Route matching logic**:
+```python
+def _match_routes(self, path: str, domain: Optional[str] = None) -> List[Route]:
+    """
+    Find all routes that match path and domain.
+
+    Priority:
+    1. Exact domain + exact path
+    2. Exact domain + wildcard path
+    3. Wildcard domain + exact path
+    4. Wildcard domain + wildcard path
+    5. NULL domain (any domain) + exact path
+    6. NULL domain (any domain) + wildcard path
+    """
+```
+
+**Domain matching rules**:
+- `NULL` or `*` in database → matches any domain
+- Exact match: `example.com` matches only `example.com`
+- Subdomain wildcard: `*.example.com` matches `api.example.com`, `admin.example.com`, etc.
+- Case-insensitive comparison
+- No port matching (domain only)
+
+#### 4. HTTP Integration
+
+**Update /authz endpoint** (`src/blueprints/authz.py`):
+```python
+@authz_bp.route('/authz', methods=['GET', 'POST', 'PUT', 'DELETE', 'PATCH'])
+def authorize():
+    # Extract domain from nginx header
+    original_host = request.headers.get('X-Original-Host', '')
+    domain = original_host.split(':')[0] if original_host else None  # Strip port
+
+    # Pass to authorizer
+    result = authorizer.authorize_request(
+        path=path,
+        method=method,
+        domain=domain,  # NEW
+        headers=headers,
+        body=body,
+        query_params=query_params
+    )
+```
+
+**Update nginx configuration** (`nginx/auth-example.conf`):
+```nginx
+location = /auth {
+    internal;
+    proxy_pass http://auth_service/authz;
+
+    # Pass original request info
+    proxy_set_header X-Original-URI $request_uri;
+    proxy_set_header X-Original-Method $request_method;
+    proxy_set_header X-Original-Host $host;  # NEW - pass domain
+    proxy_pass_request_body off;
+    proxy_set_header Content-Length "";
+}
+```
+
+#### 5. Management Scripts
+
+**Update create_route.py**:
+```python
+# Prompt for domain
+domain = input("Domain (leave blank for any domain, * for wildcard): ").strip()
+if not domain:
+    domain = None  # Any domain
+```
+
+**Update list_routes.py**:
+```python
+# Display domain in table
+print(f"Domain: {route.domain or '*'}")
+```
+
+**Update other scripts**:
+- `delete_route.py` - Show domain in selection
+- `dev_scripts/setup_test_data.py` - Add domain examples
+- `dev_scripts/setup_production_test_data.py` - Add domain field
+
+#### 6. Database Driver
+
+**Update AuthServiceDB** (`src/database/driver.py`):
+```python
+def find_matching_routes(self, path: str, domain: Optional[str] = None) -> List[Route]:
+    """
+    Find routes matching path and domain.
+
+    Query logic:
+    - Match domain exactly, or
+    - Match wildcard domain pattern, or
+    - Match NULL domain (any)
+
+    Then match path (exact or wildcard)
+    Order by specificity (exact domain > wildcard > null)
+    """
+```
+
+### Tests to Write
+
+**Domain Matching Tests** (`tests/test_authorizer_domain_matching.py`):
+- Exact domain match
+- Wildcard subdomain match (`*.example.com`)
+- Any domain match (`NULL` or `*`)
+- Case-insensitive matching
+- Domain priority (exact > wildcard > null)
+- Path + domain combination matching
+- Missing domain header (defaults to any)
+
+**Integration Tests** (`tests/test_authz_endpoint_domain.py`):
+- X-Original-Host header extraction
+- Port stripping from host header
+- Domain-based authorization decisions
+- Multiple domains with same path
+
+**Edge Cases**:
+- Same path on different domains
+- Wildcard domain conflicts
+- Domain with port number
+- Invalid domain formats
+- IDN/Unicode domains (if needed)
+
+### Success Criteria
+
+- [ ] Database migration script created and tested
+- [ ] Domain column added to routes table
+- [ ] Route model updated with domain field
+- [ ] Domain matching logic implemented in authorizer
+- [ ] Domain priority rules working correctly
+- [ ] X-Original-Host header extraction in /authz endpoint
+- [ ] All management scripts updated
+- [ ] Backward compatibility maintained (NULL domain works)
+- [ ] Comprehensive test coverage (30+ tests)
+- [ ] Nginx configuration example updated
+- [ ] Documentation updated (README, ARCHITECTURE)
+- [ ] All existing tests still passing
+
+### Estimated Effort
+
+**Database Migration**: 1 hour
+**Model & Validation**: 1 hour
+**Authorization Logic**: 2-3 hours
+**HTTP Integration**: 1 hour
+**Management Scripts**: 2 hours
+**Testing**: 3-4 hours
+**Documentation**: 1 hour
+**Total**: ~1.5 days
+
+---
+
+## Phase 6: Enhancement Features (Future)
 
 **Nice-to-haves after core is production-ready**
 
@@ -805,24 +1039,26 @@ python scripts/rotate_client_credentials.py <client_id>
 | Phase 1: Authorization Engine | 1 day | ✅ COMPLETED | None |
 | Phase 2: Authentication Handlers | 1 day | ✅ COMPLETED | Phase 1 |
 | Phase 3: Flask HTTP Endpoint | 1 day | ✅ COMPLETED | Phase 2 |
-| Phase 4: Production Readiness | 2 days | 🎯 IN PROGRESS | Phase 3 |
-| **Core Complete** | **5 days** | **~3 days done** | |
-| Phase 5: Enhancements | Ongoing | ⏳ Pending | Phase 4 |
+| Phase 4: Production Readiness | 1 day | ✅ COMPLETED | Phase 3 |
+| Phase 5: Domain-Based Routing | 1.5 days | 🎯 NEXT | Phase 4 |
+| **Core Complete** | **5.5 days** | **4 days done** | |
+| Phase 6: Enhancements | Ongoing | ⏳ Pending | Phase 5 |
 
-**Progress**: 3 of 4 core phases completed (~60% to production-ready)
+**Progress**: 4 of 5 core phases completed (~73% to multi-domain production-ready)
 
 ---
 
 ## Next Steps
 
-**Immediate**: Start Phase 4 - Production Readiness
+**Immediate**: Start Phase 5 - Domain-Based Routing
 
-1. Set up Docker deployment (Dockerfile + docker-compose.yml)
-2. Configure Gunicorn for production
-3. Implement performance optimizations (caching)
-4. Add Prometheus metrics
-5. Implement structured logging
-6. Performance benchmarking
-7. Complete deployment documentation
+1. Create database migration script
+2. Update Route model with domain field
+3. Implement domain matching logic in authorizer
+4. Update /authz endpoint for X-Original-Host extraction
+5. Update all management scripts
+6. Write comprehensive tests
+7. Update nginx configuration example
+8. Update documentation
 
-**After Phase 4**: Review and plan Phase 5 (Enhancement Features)
+**After Phase 5**: Phase 6 Enhancement Features (rate limiting, admin API, audit logging, etc.)
