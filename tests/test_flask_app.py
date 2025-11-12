@@ -44,11 +44,13 @@ class TestHealthEndpoint:
         # Create some routes and clients
         route1 = Route.create_new(
             route_pattern='/api/test1',
+            domain='*',
             service_name='test-service',
             methods={HttpMethod.GET: MethodAuth(auth_required=False)}
         )
         route2 = Route.create_new(
             route_pattern='/api/test2',
+            domain='*',
             service_name='test-service',
             methods={HttpMethod.GET: MethodAuth(auth_required=False)}
         )
@@ -78,6 +80,7 @@ class TestAuthzEndpointPublicRoutes:
         # Create a public route
         route = Route.create_new(
             route_pattern='/api/public',
+            domain='*',
             service_name='test-service',
             methods={HttpMethod.GET: MethodAuth(auth_required=False)}
         )
@@ -100,6 +103,7 @@ class TestAuthzEndpointPublicRoutes:
         """Test public POST request returns 200."""
         route = Route.create_new(
             route_pattern='/api/register',
+            domain='*',
             service_name='test-service',
             methods={HttpMethod.POST: MethodAuth(auth_required=False)}
         )
@@ -138,6 +142,7 @@ class TestAuthzEndpointAPIKey:
         # Create protected route
         route = Route.create_new(
             route_pattern='/api/protected',
+            domain='*',
             service_name='test-service',
             methods={HttpMethod.GET: MethodAuth(auth_required=True, auth_type=AuthType.API_KEY)}
         )
@@ -179,6 +184,7 @@ class TestAuthzEndpointAPIKey:
         # Create protected route
         route = Route.create_new(
             route_pattern='/api/protected',
+            domain='*',
             service_name='test-service',
             methods={HttpMethod.GET: MethodAuth(auth_required=True, auth_type=AuthType.API_KEY)}
         )
@@ -210,6 +216,7 @@ class TestAuthzEndpointAPIKey:
         # Create protected route
         route = Route.create_new(
             route_pattern='/api/protected',
+            domain='*',
             service_name='test-service',
             methods={HttpMethod.GET: MethodAuth(auth_required=True, auth_type=AuthType.API_KEY)}
         )
@@ -233,6 +240,7 @@ class TestAuthzEndpointAPIKey:
         # Create protected route
         route = Route.create_new(
             route_pattern='/api/protected',
+            domain='*',
             service_name='test-service',
             methods={HttpMethod.GET: MethodAuth(auth_required=True, auth_type=AuthType.API_KEY)}
         )
@@ -276,6 +284,7 @@ class TestAuthzEndpointHMAC:
         # Create protected route
         route = Route.create_new(
             route_pattern='/api/hmac-test',
+            domain='*',
             service_name='test-service',
             methods={HttpMethod.POST: MethodAuth(auth_required=True, auth_type=AuthType.HMAC)}
         )
@@ -325,6 +334,7 @@ class TestAuthzEndpointHMAC:
         # Create protected route
         route = Route.create_new(
             route_pattern='/api/hmac-test',
+            domain='*',
             service_name='test-service',
             methods={HttpMethod.POST: MethodAuth(auth_required=True, auth_type=AuthType.HMAC)}
         )
@@ -365,6 +375,7 @@ class TestAuthzEndpointHMAC:
         # Create protected route
         route = Route.create_new(
             route_pattern='/api/hmac-test',
+            domain='*',
             service_name='test-service',
             methods={HttpMethod.POST: MethodAuth(auth_required=True, auth_type=AuthType.HMAC)}
         )
@@ -410,6 +421,7 @@ class TestAuthzEndpointQueryParams:
         # Create protected route
         route = Route.create_new(
             route_pattern='/api/query-test',
+            domain='*',
             service_name='test-service',
             methods={HttpMethod.GET: MethodAuth(auth_required=True, auth_type=AuthType.API_KEY)}
         )
@@ -485,6 +497,7 @@ class TestAuthzEndpointEdgeCases:
         # Create protected route
         route = Route.create_new(
             route_pattern='/api/protected',
+            domain='*',
             service_name='test-service',
             methods={HttpMethod.GET: MethodAuth(auth_required=True, auth_type=AuthType.API_KEY)}
         )
@@ -535,6 +548,7 @@ class TestMetricsEndpoint:
         # Create a public route
         route = Route.create_new(
             route_pattern='/api/metrics-test',
+            domain='*',
             service_name='test-service',
             methods={HttpMethod.GET: MethodAuth(auth_required=False)}
         )
@@ -568,6 +582,7 @@ class TestMetricsEndpoint:
         # Create public route
         public_route = Route.create_new(
             route_pattern='/api/public-metrics',
+            domain='*',
             service_name='test-service',
             methods={HttpMethod.GET: MethodAuth(auth_required=False)}
         )
@@ -576,6 +591,7 @@ class TestMetricsEndpoint:
         # Create protected route
         protected_route = Route.create_new(
             route_pattern='/api/protected-metrics',
+            domain='*',
             service_name='test-service',
             methods={HttpMethod.GET: MethodAuth(auth_required=True, auth_type=AuthType.API_KEY)}
         )

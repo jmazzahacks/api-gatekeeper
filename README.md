@@ -7,13 +7,14 @@ A flexible authentication and authorization service designed to work with nginx'
 - **Multiple Authentication Methods**: API Key (simple) or HMAC-SHA256 signatures (secure)
 - **Route-Based Protection**: Define which endpoints require authentication
 - **Method-Level Permissions**: Control access per HTTP method (GET, POST, DELETE, etc.)
+- **Domain-Based Routing**: Multi-domain support with domain-specific access rules
 - **Client Management**: Issue credentials and manage client lifecycle
 - **Flexible Permissions**: Grant specific clients access to specific routes with specific methods
 - **Nginx Integration**: Works seamlessly with nginx `auth_request` directive
 - **Flask HTTP Endpoint**: Production-ready authorization service on port 7843
 - **Database-Driven**: All configuration in PostgreSQL - no code changes needed
 - **Complete Management Scripts**: Interactive CLI tools for all operations
-- **Comprehensive Testing**: 151 tests with 100% pass rate
+- **Comprehensive Testing**: 162 tests with 100% pass rate
 
 ## Architecture
 
@@ -22,6 +23,21 @@ The system is built around three core entities:
 1. **Routes**: Define protected API endpoints and their auth requirements per HTTP method
 2. **Clients**: API consumers with credentials (API keys and/or shared secrets)
 3. **Permissions**: Connect clients to routes with allowed HTTP methods
+
+### Domain-Based Routing
+
+Routes can be configured with domain-specific access rules, enabling multi-domain support with a single gatekeeper instance:
+
+- **Exact domain**: `api.example.com` - matches only this specific domain
+- **Wildcard subdomain**: `*.example.com` - matches all subdomains (api.example.com, admin.example.com, etc.)
+- **Any domain**: `*` - matches all domains (backward compatible)
+
+**Use cases:**
+- Different access rules for public API vs admin API on different subdomains
+- Multi-tenant applications with domain-per-tenant
+- Development/staging/production environments on different domains
+
+**Priority**: When multiple routes match, exact domain matches take priority over wildcard subdomains, which take priority over any-domain wildcards.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed architecture documentation.
 
@@ -94,10 +110,11 @@ The server starts on **port 7843** with two endpoints:
 # Health check
 curl http://localhost:7843/health
 
-# Test authorization (requires X-Original-URI and X-Original-Method headers)
+# Test authorization (requires X-Original-URI, X-Original-Method, and X-Original-Host headers)
 curl -v http://localhost:7843/authz \
   -H "X-Original-URI: /api/test" \
   -H "X-Original-Method: GET" \
+  -H "X-Original-Host: api.example.com" \
   -H "Authorization: Bearer your-api-key"
 ```
 
@@ -133,6 +150,7 @@ python scripts/create_route.py
 
 Interactive prompts guide you through:
 - Route pattern (e.g., `/api/users/*`)
+- Domain (exact domain, wildcard subdomain, or `*` for any domain)
 - Service name
 - HTTP methods to support
 - Authentication requirements per method (none, API key, or HMAC)
@@ -140,6 +158,7 @@ Interactive prompts guide you through:
 **Example:**
 ```
 Route pattern: /api/users/*
+Domain: api.example.com (or * for any domain)
 Service: user-service
 Methods:
   GET: Public (no auth required)
@@ -332,8 +351,9 @@ python -m pytest -v
 **Test database:**
 - All tests use `api_auth_admin_test` database
 - Automatic cleanup between tests
-- **151 tests** covering:
-  - Routes, clients, and permissions (74 tests)
+- **162 tests** covering:
+  - Route models with domain matching (81 tests)
+  - Clients and permissions (74 tests)
   - Authorization engine (21 tests)
   - Authentication handlers (40 tests)
   - Flask HTTP endpoint (16 tests)
@@ -373,11 +393,11 @@ api-gatekeeper/
 │   ├── list_permissions.py  # List permissions
 │   ├── revoke_permission.py # Revoke permissions
 │   └── setup_test_data.py   # Create test data
-├── tests/                   # Test suite (151 tests)
+├── tests/                   # Test suite (162 tests)
 │   ├── conftest.py          # Test fixtures
 │   ├── test_database_driver.py      # Route CRUD tests
 │   ├── test_client_operations.py    # Client/permission tests
-│   ├── test_route_model.py          # Model validation tests
+│   ├── test_route_model.py          # Model validation and domain matching tests
 │   ├── test_authorizer.py           # Authorization engine tests
 │   ├── test_auth_handlers.py        # Authentication handler tests
 │   └── test_flask_app.py            # Flask endpoint tests
@@ -493,22 +513,28 @@ Currently using `schema.sql` with `CREATE TABLE IF NOT EXISTS`. For production, 
 - [x] Nginx `auth_request` integration
 - [x] Health check endpoint (`/health`)
 - [x] Request/response header handling
-- [x] Comprehensive test suite (151 tests total)
+- [x] Comprehensive test suite (162 tests total)
 - [x] Nginx configuration example
 - [x] Test data setup utility
 
-### In Progress
+**Phase 4: Production Readiness (Complete)**
+- [x] Docker deployment setup
+- [x] Gunicorn production configuration
+- [x] Monitoring and metrics (Prometheus)
+- [x] Structured logging
+- [x] Production deployment and testing
 
-**Phase 4: Production Readiness**
-- [ ] Docker deployment setup
-- [ ] Gunicorn production configuration
-- [ ] Performance optimization (caching)
-- [ ] Monitoring and metrics (Prometheus)
-- [ ] Structured logging
+**Phase 5: Domain-Based Routing (Complete)**
+- [x] Multi-domain support with domain field in routes
+- [x] Domain matching (exact, wildcard subdomain, any domain)
+- [x] Domain-aware authorization logic
+- [x] X-Original-Host header extraction
+- [x] Updated management scripts for domain configuration
+- [x] Comprehensive domain matching tests
 
 ### Planned
 
-**Phase 5: Enhancements**
+**Phase 6: Enhancements**
 - [ ] Rate limiting per client
 - [ ] Audit logging
 - [ ] Credential rotation policies
@@ -543,4 +569,4 @@ For issues and questions:
 
 ---
 
-**Status**: Phases 1-3 complete. Flask HTTP endpoint operational. Ready for nginx integration and production deployment.
+**Status**: Phases 1-5 complete. Multi-domain routing operational. Production-ready with monitoring and structured logging. Ready for Phase 6 enhancements.

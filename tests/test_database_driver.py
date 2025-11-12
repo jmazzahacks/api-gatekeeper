@@ -30,6 +30,7 @@ class TestSaveRoute:
         """Test saving a new route."""
         route = Route.create_new(
             route_pattern='/api/test',
+            domain='*',
             service_name='test-service',
             methods={HttpMethod.GET: MethodAuth(auth_required=False)}
         )
@@ -49,6 +50,7 @@ class TestSaveRoute:
         """Test saving route with multiple HTTP methods."""
         route = Route.create_new(
             route_pattern='/api/users/*',
+            domain='*',
             service_name='user-service',
             methods={
                 HttpMethod.GET: MethodAuth(auth_required=False),
@@ -70,6 +72,7 @@ class TestSaveRoute:
         """Test that saving an existing route updates it (upsert behavior)."""
         route = Route.create_new(
             route_pattern='/api/test',
+            domain='*',
             service_name='service-v1',
             methods={HttpMethod.GET: MethodAuth(auth_required=False)}
         )
@@ -80,6 +83,7 @@ class TestSaveRoute:
         # Update route with same ID
         updated_route = Route.create_new(
             route_pattern='/api/test/v2',
+            domain='*',
             service_name='service-v2',
             methods={HttpMethod.POST: MethodAuth(auth_required=True, auth_type=AuthType.HMAC)},
             route_id=route_id
@@ -100,6 +104,7 @@ class TestLoadRouteById:
         """Test loading a route that exists."""
         route = Route.create_new(
             route_pattern='/api/load',
+            domain='*',
             service_name='load-service',
             methods={HttpMethod.GET: MethodAuth(auth_required=False)}
         )
@@ -122,6 +127,7 @@ class TestLoadRouteByPattern:
         """Test loading route by exact pattern match."""
         route = Route.create_new(
             route_pattern='/api/exact/path',
+            domain='*',
             service_name='pattern-service',
             methods={HttpMethod.GET: MethodAuth(auth_required=False)}
         )
@@ -135,6 +141,7 @@ class TestLoadRouteByPattern:
         """Test loading route by wildcard pattern."""
         route = Route.create_new(
             route_pattern='/api/users/*',
+            domain='*',
             service_name='user-service',
             methods={HttpMethod.GET: MethodAuth(auth_required=False)}
         )
@@ -157,16 +164,19 @@ class TestLoadRoutesByService:
         """Test loading all routes for a specific service."""
         route1 = Route.create_new(
             route_pattern='/api/v1/users',
+            domain='*',
             service_name='user-service',
             methods={HttpMethod.GET: MethodAuth(auth_required=False)}
         )
         route2 = Route.create_new(
             route_pattern='/api/v1/users/*',
+            domain='*',
             service_name='user-service',
             methods={HttpMethod.POST: MethodAuth(auth_required=True, auth_type=AuthType.HMAC)}
         )
         route3 = Route.create_new(
             route_pattern='/api/v1/posts',
+            domain='*',
             service_name='post-service',
             methods={HttpMethod.GET: MethodAuth(auth_required=False)}
         )
@@ -192,16 +202,19 @@ class TestLoadAllRoutes:
         """Test loading all routes from database."""
         route1 = Route.create_new(
             route_pattern='/api/route1',
+            domain='*',
             service_name='service-a',
             methods={HttpMethod.GET: MethodAuth(auth_required=False)}
         )
         route2 = Route.create_new(
             route_pattern='/api/route2',
+            domain='*',
             service_name='service-b',
             methods={HttpMethod.POST: MethodAuth(auth_required=True, auth_type=AuthType.HMAC)}
         )
         route3 = Route.create_new(
             route_pattern='/api/route3',
+            domain='*',
             service_name='service-a',
             methods={HttpMethod.DELETE: MethodAuth(auth_required=True, auth_type=AuthType.API_KEY)}
         )
@@ -228,6 +241,7 @@ class TestFindMatchingRoutes:
         """Test finding route with exact path match."""
         route = Route.create_new(
             route_pattern='/api/users',
+            domain='*',
             service_name='user-service',
             methods={HttpMethod.GET: MethodAuth(auth_required=False)}
         )
@@ -241,6 +255,7 @@ class TestFindMatchingRoutes:
         """Test finding route with wildcard match."""
         route = Route.create_new(
             route_pattern='/api/users/*',
+            domain='*',
             service_name='user-service',
             methods={HttpMethod.GET: MethodAuth(auth_required=False)}
         )
@@ -254,11 +269,13 @@ class TestFindMatchingRoutes:
         """Test finding multiple routes that match a path."""
         route1 = Route.create_new(
             route_pattern='/api/users/123',
+            domain='*',
             service_name='user-service',
             methods={HttpMethod.GET: MethodAuth(auth_required=False)}
         )
         route2 = Route.create_new(
             route_pattern='/api/users/*',
+            domain='*',
             service_name='user-service',
             methods={HttpMethod.POST: MethodAuth(auth_required=True, auth_type=AuthType.HMAC)}
         )
@@ -274,6 +291,7 @@ class TestFindMatchingRoutes:
         """Test finding routes when no matches exist."""
         route = Route.create_new(
             route_pattern='/api/users',
+            domain='*',
             service_name='user-service',
             methods={HttpMethod.GET: MethodAuth(auth_required=False)}
         )
@@ -290,6 +308,7 @@ class TestDeleteRoute:
         """Test deleting a route that exists."""
         route = Route.create_new(
             route_pattern='/api/delete',
+            domain='*',
             service_name='delete-service',
             methods={HttpMethod.GET: MethodAuth(auth_required=False)}
         )
@@ -314,6 +333,7 @@ class TestDatabaseIsolation:
         """First test that creates data."""
         route = Route.create_new(
             route_pattern='/api/isolation1',
+            domain='*',
             service_name='isolation-service',
             methods={HttpMethod.GET: MethodAuth(auth_required=False)}
         )

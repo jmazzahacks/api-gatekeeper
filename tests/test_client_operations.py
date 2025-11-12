@@ -215,6 +215,7 @@ class TestClientPermissionCRUD:
         """Create a sample route for permission tests."""
         route = Route.create_new(
             route_pattern='/api/test',
+            domain='*',
             service_name='test-service',
             methods={
                 HttpMethod.GET: MethodAuth(auth_required=False),
@@ -284,11 +285,13 @@ class TestClientPermissionCRUD:
         # Create multiple routes
         route1 = Route.create_new(
             route_pattern='/api/route1',
+            domain='*',
             service_name='service1',
             methods={HttpMethod.GET: MethodAuth(auth_required=False)}
         )
         route2 = Route.create_new(
             route_pattern='/api/route2',
+            domain='*',
             service_name='service2',
             methods={HttpMethod.POST: MethodAuth(auth_required=True, auth_type=AuthType.API_KEY)}
         )

@@ -36,6 +36,7 @@ def main():
     for i, route in enumerate(routes, 1):
         print(f"{i}. Route ID: {route.route_id}")
         print(f"   Pattern:  {route.route_pattern}")
+        print(f"   Domain:   {route.domain}")
         print(f"   Service:  {route.service_name}")
         print(f"   Methods:")
 

@@ -45,6 +45,7 @@ class Authorizer:
         self,
         path: str,
         method: HttpMethod,
+        domain: Optional[str] = None,
         headers: Optional[Dict[str, str]] = None,
         body: str = '',
         query_params: Optional[Dict[str, str]] = None
@@ -55,6 +56,7 @@ class Authorizer:
         Args:
             path: Request path (e.g., '/api/users/123')
             method: HTTP method
+            domain: Domain for route matching (optional, e.g., 'api.example.com')
             headers: HTTP headers dict (for extracting auth credentials)
             body: Request body (for HMAC signature validation)
             query_params: Query parameters (for API key extraction)
@@ -67,7 +69,7 @@ class Authorizer:
         if query_params is None:
             query_params = {}
         # Step 1: Match routes
-        matching_routes = self._match_routes(path)
+        matching_routes = self._match_routes(path, domain)
 
         if not matching_routes:
             return AuthResult(
@@ -120,19 +122,21 @@ class Authorizer:
         # Step 6: Check permissions
         return self._check_permission(client, route, method)
 
-    def _match_routes(self, path: str) -> List[Route]:
+    def _match_routes(self, path: str, domain: Optional[str] = None) -> List[Route]:
         """
-        Find all routes that match the given path.
+        Find all routes that match the given path and domain.
 
         Matches both exact routes and wildcard routes.
+        Matches exact domains, wildcard domains (*.example.com), and any domain (*).
 
         Args:
             path: Request path
+            domain: Domain for route matching (optional)
 
         Returns:
-            List of matching routes (may be empty)
+            List of matching routes sorted by specificity (may be empty)
         """
-        return self.db.find_matching_routes(path)
+        return self.db.find_matching_routes(path, domain)
 
     def _select_best_route(self, routes: List[Route], path: str) -> Route:
         """

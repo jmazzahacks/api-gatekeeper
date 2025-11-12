@@ -18,6 +18,7 @@ class TestRouteMatching:
         # Create route
         route = Route.create_new(
             route_pattern='/api/users',
+            domain='*',
             service_name='test-service',
             methods={HttpMethod.GET: MethodAuth(auth_required=False)}
         )
@@ -34,6 +35,7 @@ class TestRouteMatching:
         """Test wildcard route match."""
         route = Route.create_new(
             route_pattern='/api/users/*',
+            domain='*',
             service_name='test-service',
             methods={HttpMethod.GET: MethodAuth(auth_required=False)}
         )
@@ -60,6 +62,7 @@ class TestRouteMatching:
         # Create wildcard route
         wildcard_route = Route.create_new(
             route_pattern='/api/users/*',
+            domain='*',
             service_name='wildcard-service',
             methods={HttpMethod.GET: MethodAuth(auth_required=False)}
         )
@@ -68,6 +71,7 @@ class TestRouteMatching:
         # Create exact route
         exact_route = Route.create_new(
             route_pattern='/api/users/123',
+            domain='*',
             service_name='exact-service',
             methods={HttpMethod.GET: MethodAuth(auth_required=False)}
         )
@@ -84,6 +88,7 @@ class TestRouteMatching:
         # Create broad wildcard
         broad_route = Route.create_new(
             route_pattern='/api/*',
+            domain='*',
             service_name='broad-service',
             methods={HttpMethod.GET: MethodAuth(auth_required=False)}
         )
@@ -92,6 +97,7 @@ class TestRouteMatching:
         # Create specific wildcard
         specific_route = Route.create_new(
             route_pattern='/api/users/*',
+            domain='*',
             service_name='specific-service',
             methods={HttpMethod.GET: MethodAuth(auth_required=False)}
         )
@@ -111,6 +117,7 @@ class TestPublicRoutes:
         """Test public GET request allows access without credentials."""
         route = Route.create_new(
             route_pattern='/api/public',
+            domain='*',
             service_name='test-service',
             methods={HttpMethod.GET: MethodAuth(auth_required=False)}
         )
@@ -127,6 +134,7 @@ class TestPublicRoutes:
         """Test request to method not configured for route."""
         route = Route.create_new(
             route_pattern='/api/test',
+            domain='*',
             service_name='test-service',
             methods={HttpMethod.GET: MethodAuth(auth_required=False)}
         )
@@ -143,6 +151,7 @@ class TestPublicRoutes:
         """Test route with both public and protected methods."""
         route = Route.create_new(
             route_pattern='/api/mixed',
+            domain='*',
             service_name='test-service',
             methods={
                 HttpMethod.GET: MethodAuth(auth_required=False),
@@ -172,6 +181,7 @@ class TestAuthenticatedAccess:
         """Create a protected route."""
         route = Route.create_new(
             route_pattern='/api/protected',
+            domain='*',
             service_name='test-service',
             methods={
                 HttpMethod.GET: MethodAuth(auth_required=True, auth_type=AuthType.API_KEY),
@@ -280,6 +290,7 @@ class TestClientStatus:
         """Create a protected route."""
         route = Route.create_new(
             route_pattern='/api/status-test',
+            domain='*',
             service_name='test-service',
             methods={HttpMethod.GET: MethodAuth(auth_required=True, auth_type=AuthType.API_KEY)}
         )
@@ -376,6 +387,7 @@ class TestSharedSecretAuth:
         # Create protected route
         route = Route.create_new(
             route_pattern='/api/hmac-test',
+            domain='*',
             service_name='test-service',
             methods={HttpMethod.POST: MethodAuth(auth_required=True, auth_type=AuthType.HMAC)}
         )
@@ -420,6 +432,7 @@ class TestSharedSecretAuth:
         """Test invalid shared secret denies access."""
         route = Route.create_new(
             route_pattern='/api/hmac-test',
+            domain='*',
             service_name='test-service',
             methods={HttpMethod.POST: MethodAuth(auth_required=True, auth_type=AuthType.HMAC)}
         )

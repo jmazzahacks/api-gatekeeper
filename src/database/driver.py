@@ -152,18 +152,49 @@ class AuthServiceDB:
             results = cursor.fetchall()
             return [Route.from_dict(dict(row)) for row in results]
 
-    def find_matching_routes(self, path: str) -> List[Route]:
+    def find_matching_routes(self, path: str, domain: Optional[str] = None) -> List[Route]:
         """
-        Find all routes that match a given path (exact or wildcard).
+        Find all routes that match a given path and domain (exact or wildcard).
 
         Args:
             path: URL path to match
+            domain: Domain to match (optional, case-insensitive)
 
         Returns:
-            List of matching Route objects
+            List of matching Route objects, sorted by specificity:
+            - Exact domain + exact path (highest priority)
+            - Exact domain + wildcard path
+            - Wildcard domain + exact path
+            - Wildcard domain + wildcard path
+            - Any domain (*) + exact path
+            - Any domain (*) + wildcard path (lowest priority)
         """
         routes = self.load_all_routes()
-        return [route for route in routes if route.matches(path)]
+
+        # Filter routes that match both path and domain
+        matching_routes = [
+            route for route in routes
+            if route.matches(path) and route.matches_domain(domain)
+        ]
+
+        # Sort by specificity (most specific first)
+        def route_specificity(route: Route) -> tuple:
+            # Domain specificity: exact (0) > wildcard subdomain (1) > any (*) (2)
+            if route.domain.lower() == (domain.lower() if domain else ''):
+                domain_score = 0  # Exact match
+            elif route.domain.startswith('*.'):
+                domain_score = 1  # Wildcard subdomain
+            else:  # route.domain == '*'
+                domain_score = 2  # Any domain
+
+            # Path specificity: exact (0) > wildcard (1)
+            path_score = 1 if route.route_pattern.endswith('/*') else 0
+
+            # Return tuple for sorting (lower is more specific)
+            return (domain_score, path_score)
+
+        matching_routes.sort(key=route_specificity)
+        return matching_routes
 
     def save_route(self, route: Route) -> str:
         """
@@ -184,11 +215,12 @@ class AuthServiceDB:
                 # Update existing route
                 cursor.execute(
                     """
-                    INSERT INTO routes (route_id, route_pattern, service_name, methods, created_at, updated_at)
-                    VALUES (%(route_id)s, %(route_pattern)s, %(service_name)s, %(methods)s, %(created_at)s, %(updated_at)s)
+                    INSERT INTO routes (route_id, route_pattern, domain, service_name, methods, created_at, updated_at)
+                    VALUES (%(route_id)s, %(route_pattern)s, %(domain)s, %(service_name)s, %(methods)s, %(created_at)s, %(updated_at)s)
                     ON CONFLICT (route_id)
                     DO UPDATE SET
                         route_pattern = EXCLUDED.route_pattern,
+                        domain = EXCLUDED.domain,
                         service_name = EXCLUDED.service_name,
                         methods = EXCLUDED.methods,
                         updated_at = EXCLUDED.updated_at
@@ -202,8 +234,8 @@ class AuthServiceDB:
                 insert_dict = {k: v for k, v in route_dict.items() if k != 'route_id'}
                 cursor.execute(
                     """
-                    INSERT INTO routes (route_pattern, service_name, methods, created_at, updated_at)
-                    VALUES (%(route_pattern)s, %(service_name)s, %(methods)s, %(created_at)s, %(updated_at)s)
+                    INSERT INTO routes (route_pattern, domain, service_name, methods, created_at, updated_at)
+                    VALUES (%(route_pattern)s, %(domain)s, %(service_name)s, %(methods)s, %(created_at)s, %(updated_at)s)
                     RETURNING route_id
                     """,
                     insert_dict

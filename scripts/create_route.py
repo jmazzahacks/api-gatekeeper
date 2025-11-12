@@ -103,6 +103,15 @@ def main():
         print("⚠️  Route pattern should start with '/'")
         route_pattern = '/' + route_pattern
 
+    print("\nDomain: Specify which domain(s) this route applies to")
+    print("  - Enter a domain like 'api.example.com' for exact match")
+    print("  - Enter '*.example.com' to match all subdomains")
+    print("  - Enter '*' to match any domain")
+    domain = get_input("Domain (e.g., api.example.com or * for any)")
+    while not domain:
+        print("Domain is required")
+        domain = get_input("Domain (e.g., api.example.com or * for any)")
+
     service_name = get_input("Service name (e.g., user-service)")
     while not service_name:
         print("Service name is required")
@@ -140,6 +149,7 @@ def main():
     print("Route Summary")
     print("=" * 60)
     print(f"Route Pattern:  {route_pattern}")
+    print(f"Domain:         {domain}")
     print(f"Service Name:   {service_name}")
     print(f"\nHTTP Methods:")
     for method, auth in methods.items():
@@ -158,6 +168,7 @@ def main():
     try:
         route = Route.create_new(
             route_pattern=route_pattern,
+            domain=domain,
             service_name=service_name,
             methods=methods
         )
@@ -170,7 +181,9 @@ def main():
         else:
             example_path = route_pattern
 
-        print(f"Example: This route will match requests to: {example_path}")
+        domain_display = domain if domain != '*' else 'any domain'
+        print(f"\nExample: This route will match requests to:")
+        print(f"  http://{domain_display}{example_path}")
 
     except Exception as e:
         print(f"\n✗ Error saving route: {e}")

@@ -43,10 +43,17 @@ def authorize():
         # Extract nginx forwarded headers
         original_uri = request.headers.get('X-Original-URI')
         original_method = request.headers.get('X-Original-Method')
+        original_host = request.headers.get('X-Original-Host', '')
 
         if not original_uri or not original_method:
             logger.warning("Missing X-Original-URI or X-Original-Method headers")
             return make_response('Missing required headers', 400)
+
+        # Extract domain from host (strip port if present)
+        domain = None
+        if original_host:
+            # Remove port number if present (e.g., example.com:8080 -> example.com)
+            domain = original_host.split(':')[0] if ':' in original_host else original_host
 
         # Parse query parameters from URI
         query_params = {}
@@ -78,6 +85,7 @@ def authorize():
         result = authorizer.authorize_request(
             path=path,
             method=method,
+            domain=domain,
             headers=headers,
             body=body,
             query_params=query_params if query_params else None

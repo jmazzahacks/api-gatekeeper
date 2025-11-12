@@ -45,18 +45,20 @@ def main():
     # 1. Public route - no authentication required
     public_route = Route.create_new(
         route_pattern='/api/test/public',
+        domain='*',  # Any domain
         service_name='test-service',
         methods={
             HttpMethod.GET: MethodAuth(auth_required=False)
         }
     )
     db.save_route(public_route)
-    print(f"✓ Created public route: GET /api/test/public")
+    print(f"✓ Created public route: GET /api/test/public (domain: *)")
     print(f"  Route ID: {public_route.route_id}")
 
     # 2. API key protected route
     apikey_route = Route.create_new(
         route_pattern='/api/test/protected',
+        domain='*',  # Any domain
         service_name='test-service',
         methods={
             HttpMethod.GET: MethodAuth(auth_required=True, auth_type=AuthType.API_KEY),
@@ -64,19 +66,20 @@ def main():
         }
     )
     db.save_route(apikey_route)
-    print(f"✓ Created API key protected route: GET,POST /api/test/protected")
+    print(f"✓ Created API key protected route: GET,POST /api/test/protected (domain: *)")
     print(f"  Route ID: {apikey_route.route_id}")
 
     # 3. HMAC protected route
     hmac_route = Route.create_new(
         route_pattern='/api/test/secure',
+        domain='*',  # Any domain
         service_name='test-service',
         methods={
             HttpMethod.POST: MethodAuth(auth_required=True, auth_type=AuthType.HMAC)
         }
     )
     db.save_route(hmac_route)
-    print(f"✓ Created HMAC protected route: POST /api/test/secure")
+    print(f"✓ Created HMAC protected route: POST /api/test/secure (domain: *)")
     print(f"  Route ID: {hmac_route.route_id}")
 
     print()

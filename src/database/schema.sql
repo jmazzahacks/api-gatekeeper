@@ -7,6 +7,7 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto;
 CREATE TABLE IF NOT EXISTS routes (
     route_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     route_pattern TEXT NOT NULL,
+    domain TEXT NOT NULL,
     service_name TEXT NOT NULL,
     methods JSONB NOT NULL,
     created_at BIGINT NOT NULL DEFAULT extract(epoch from now())::bigint,
@@ -14,11 +15,12 @@ CREATE TABLE IF NOT EXISTS routes (
 
     -- Constraints
     CONSTRAINT route_pattern_format CHECK (route_pattern ~ '^/'),
-    CONSTRAINT methods_not_empty CHECK (jsonb_typeof(methods) = 'object' AND methods != '{}'::jsonb)
+    CONSTRAINT methods_not_empty CHECK (jsonb_typeof(methods) = 'object' AND methods != '{}'::jsonb),
+    CONSTRAINT domain_format CHECK (domain ~ '^[a-zA-Z0-9]([a-zA-Z0-9\-\.]*[a-zA-Z0-9])?$|^\*$|^\*\.[a-zA-Z0-9]([a-zA-Z0-9\-\.]*[a-zA-Z0-9])?$')
 );
 
--- Index for efficient route pattern lookups
-CREATE INDEX IF NOT EXISTS idx_routes_pattern ON routes(route_pattern);
+-- Index for efficient domain+path lookups (composite index)
+CREATE INDEX IF NOT EXISTS idx_routes_domain_pattern ON routes(domain, route_pattern);
 
 -- Index for service name filtering
 CREATE INDEX IF NOT EXISTS idx_routes_service ON routes(service_name);
@@ -34,6 +36,7 @@ CREATE INDEX IF NOT EXISTS idx_routes_methods ON routes USING GIN(methods);
 COMMENT ON TABLE routes IS 'Protected API routes with HTTP method-specific authentication requirements';
 COMMENT ON COLUMN routes.route_id IS 'Unique identifier for the route';
 COMMENT ON COLUMN routes.route_pattern IS 'URL pattern - exact match or wildcard ending with /*';
+COMMENT ON COLUMN routes.domain IS 'Domain for route matching. Examples: example.com (exact), *.example.com (subdomain wildcard), * (any domain)';
 COMMENT ON COLUMN routes.service_name IS 'Name of the backend service this route protects';
 COMMENT ON COLUMN routes.methods IS 'JSONB object mapping HTTP methods to auth requirements: {"GET": {"auth_required": false}, "POST": {"auth_required": true, "auth_type": "hmac"}}';
 COMMENT ON COLUMN routes.created_at IS 'Unix timestamp (seconds since epoch) when route was created';

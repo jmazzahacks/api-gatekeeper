@@ -80,6 +80,7 @@ class TestRoute:
         now = int(time.time())
         route = Route(
             route_pattern='/api/test',
+            domain='*',
             service_name='test-service',
             methods={
                 HttpMethod.GET: MethodAuth(auth_required=False)
@@ -98,6 +99,7 @@ class TestRoute:
         now = int(time.time())
         route = Route(
             route_pattern='/api/test',
+            domain='*',
             service_name='test-service',
             methods={
                 HttpMethod.GET: MethodAuth(auth_required=False),
@@ -120,6 +122,7 @@ class TestRoute:
         with pytest.raises(ValueError, match="route_pattern must start with /"):
             Route(
             route_pattern='api/test',
+            domain='*',
             service_name='test-service',
             methods={HttpMethod.GET: MethodAuth(auth_required=False)},
             created_at=now,
@@ -134,6 +137,7 @@ class TestRoute:
         with pytest.raises(ValueError, match="Wildcard .* must only appear at the end"):
             Route(
             route_pattern='/api/*/test',
+            domain='*',
             service_name='test-service',
             methods={HttpMethod.GET: MethodAuth(auth_required=False)},
             created_at=now,
@@ -148,6 +152,7 @@ class TestRoute:
         with pytest.raises(ValueError, match="Only one wildcard is allowed"):
             Route(
             route_pattern='/api/*/*',
+            domain='*',
             service_name='test-service',
             methods={HttpMethod.GET: MethodAuth(auth_required=False)},
             created_at=now,
@@ -162,6 +167,7 @@ class TestRoute:
         with pytest.raises(ValueError, match="At least one HTTP method must be defined"):
             Route(
                 route_pattern='/api/test',
+            domain='*',
                 service_name='test-service',
                 methods={},
                 created_at=now,
@@ -174,6 +180,7 @@ class TestRoute:
         now = int(time.time())
         route = Route(
             route_pattern='/api/users',
+            domain='*',
             service_name='test-service',
             methods={HttpMethod.GET: MethodAuth(auth_required=False)},
             created_at=now,
@@ -190,6 +197,7 @@ class TestRoute:
         now = int(time.time())
         route = Route(
             route_pattern='/api/users/*',
+            domain='*',
             service_name='test-service',
             methods={HttpMethod.GET: MethodAuth(auth_required=False)},
             created_at=now,
@@ -207,6 +215,7 @@ class TestRoute:
         now = int(time.time())
         route = Route(
             route_pattern='/api/test',
+            domain='*',
             service_name='test-service',
             methods={
                 HttpMethod.GET: MethodAuth(auth_required=False),
@@ -232,6 +241,7 @@ class TestRoute:
         now = int(time.time())
         route = Route(
             route_pattern='/api/test',
+            domain='*',
             service_name='test-service',
             methods={
                 HttpMethod.GET: MethodAuth(auth_required=False),
@@ -251,6 +261,7 @@ class TestRoute:
         now = int(time.time())
         route = Route(
             route_pattern='/api/test',
+            domain='*',
             service_name='test-service',
             methods={
                 HttpMethod.GET: MethodAuth(auth_required=False),
@@ -278,6 +289,7 @@ class TestRoute:
         data = {
             'route_id': 'test-route',
             'route_pattern': '/api/test',
+            'domain': 'api.example.com',
             'service_name': 'test-service',
             'methods': {
                 'GET': {'auth_required': False, 'auth_type': None},
@@ -289,6 +301,7 @@ class TestRoute:
         route = Route.from_dict(data)
         assert route.route_id == 'test-route'
         assert route.route_pattern == '/api/test'
+        assert route.domain == 'api.example.com'
         assert route.service_name == 'test-service'
         assert len(route.methods) == 2
         assert route.methods[HttpMethod.GET].auth_required is False
@@ -299,6 +312,7 @@ class TestRoute:
         before = int(time.time())
         route = Route.create_new(
             route_pattern='/api/test',
+            domain='*',
             service_name='test-service',
             methods={HttpMethod.GET: MethodAuth(auth_required=False)},
             route_id='test-route'
@@ -309,3 +323,148 @@ class TestRoute:
         assert before <= route.created_at <= after
         assert before <= route.updated_at <= after
         assert route.created_at == route.updated_at
+
+class TestRouteDomainMatching:
+    """Test domain matching functionality."""
+
+    def test_matches_domain_exact_match(self):
+        """Test exact domain matching."""
+        now = int(time.time())
+        route = Route(
+            route_pattern='/api/test',
+            domain='api.example.com',
+            service_name='test-service',
+            methods={HttpMethod.GET: MethodAuth(auth_required=False)},
+            created_at=now,
+            updated_at=now
+        )
+        
+        assert route.matches_domain('api.example.com') is True
+        assert route.matches_domain('API.EXAMPLE.COM') is True  # Case insensitive
+        assert route.matches_domain('other.example.com') is False
+        assert route.matches_domain('example.com') is False
+
+    def test_matches_domain_wildcard_any(self):
+        """Test wildcard '*' matches any domain."""
+        now = int(time.time())
+        route = Route(
+            route_pattern='/api/test',
+            domain='*',
+            service_name='test-service',
+            methods={HttpMethod.GET: MethodAuth(auth_required=False)},
+            created_at=now,
+            updated_at=now
+        )
+        
+        assert route.matches_domain('api.example.com') is True
+        assert route.matches_domain('admin.example.com') is True
+        assert route.matches_domain('anything.com') is True
+        assert route.matches_domain(None) is True
+
+    def test_matches_domain_wildcard_subdomain(self):
+        """Test wildcard subdomain matching (*.example.com)."""
+        now = int(time.time())
+        route = Route(
+            route_pattern='/api/test',
+            domain='*.example.com',
+            service_name='test-service',
+            methods={HttpMethod.GET: MethodAuth(auth_required=False)},
+            created_at=now,
+            updated_at=now
+        )
+        
+        assert route.matches_domain('api.example.com') is True
+        assert route.matches_domain('admin.example.com') is True
+        assert route.matches_domain('API.EXAMPLE.COM') is True  # Case insensitive
+        assert route.matches_domain('example.com') is True  # Base domain also matches
+        assert route.matches_domain('other.com') is False
+        assert route.matches_domain('example.org') is False
+
+    def test_matches_domain_no_domain_provided(self):
+        """Test matching when no domain is provided in request."""
+        now = int(time.time())
+        
+        # Exact domain route
+        exact_route = Route(
+            route_pattern='/api/test',
+            domain='api.example.com',
+            service_name='test-service',
+            methods={HttpMethod.GET: MethodAuth(auth_required=False)},
+            created_at=now,
+            updated_at=now
+        )
+        assert exact_route.matches_domain(None) is False
+        
+        # Wildcard route
+        wildcard_route = Route(
+            route_pattern='/api/test',
+            domain='*',
+            service_name='test-service',
+            methods={HttpMethod.GET: MethodAuth(auth_required=False)},
+            created_at=now,
+            updated_at=now
+        )
+        assert wildcard_route.matches_domain(None) is True
+
+    def test_domain_validation_valid_formats(self):
+        """Test that valid domain formats are accepted."""
+        now = int(time.time())
+        
+        # Exact domain
+        route1 = Route(
+            route_pattern='/api/test',
+            domain='api.example.com',
+            service_name='test-service',
+            methods={HttpMethod.GET: MethodAuth(auth_required=False)},
+            created_at=now,
+            updated_at=now
+        )
+        assert route1.domain == 'api.example.com'
+        
+        # Wildcard any
+        route2 = Route(
+            route_pattern='/api/test',
+            domain='*',
+            service_name='test-service',
+            methods={HttpMethod.GET: MethodAuth(auth_required=False)},
+            created_at=now,
+            updated_at=now
+        )
+        assert route2.domain == '*'
+        
+        # Wildcard subdomain
+        route3 = Route(
+            route_pattern='/api/test',
+            domain='*.example.com',
+            service_name='test-service',
+            methods={HttpMethod.GET: MethodAuth(auth_required=False)},
+            created_at=now,
+            updated_at=now
+        )
+        assert route3.domain == '*.example.com'
+
+    def test_domain_validation_invalid_formats(self):
+        """Test that invalid domain formats are rejected."""
+        now = int(time.time())
+        
+        # Empty domain
+        with pytest.raises(ValueError, match="domain is required"):
+            Route(
+                route_pattern='/api/test',
+                domain='',
+                service_name='test-service',
+                methods={HttpMethod.GET: MethodAuth(auth_required=False)},
+                created_at=now,
+                updated_at=now
+            )
+        
+        # Invalid characters
+        with pytest.raises(ValueError, match="domain must be a valid format"):
+            Route(
+                route_pattern='/api/test',
+                domain='invalid domain!',
+                service_name='test-service',
+                methods={HttpMethod.GET: MethodAuth(auth_required=False)},
+                created_at=now,
+                updated_at=now
+            )
