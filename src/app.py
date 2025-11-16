@@ -9,16 +9,28 @@ import logging
 from typing import Optional
 from flask import Flask
 from dotenv import load_dotenv
+
+# Load environment variables from .env file FIRST
+load_dotenv()
+
+# Configure Loki logging with mazza-base
+# Must be done before any other imports that might log
+from mazza_base import configure_logging
+
+debug_mode = os.environ.get('DEBUG_LOCAL', 'true').lower() == 'true'
+log_level = os.environ.get('LOG_LEVEL', 'INFO')
+configure_logging(
+    application_tag='api-gatekeeper',
+    debug_local=debug_mode,
+    local_level=log_level
+)
+
 from src.auth import Authorizer
 from src.utils import get_db_connection
 from src.database.driver import AuthServiceDB
-from src.monitoring import setup_json_logging
 from src.blueprints import authz_bp, health_bp, metrics_bp
 
-# Load environment variables from .env file
-load_dotenv()
-
-logger = None  # Will be set up by setup_json_logging()
+logger = logging.getLogger(__name__)
 
 
 def create_app(db: Optional[AuthServiceDB] = None) -> Flask:
@@ -32,10 +44,6 @@ def create_app(db: Optional[AuthServiceDB] = None) -> Flask:
         Configured Flask application
     """
     app = Flask(__name__)
-
-    # Set up JSON structured logging
-    global logger
-    logger = setup_json_logging(app)
 
     # Initialize database connection and authorizer
     if db is None:

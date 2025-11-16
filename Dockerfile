@@ -1,6 +1,18 @@
 FROM python:3.13-slim
 
+# Build argument for GitHub Personal Access Token (required for private deps)
+ARG CR_PAT
+ENV CR_PAT=${CR_PAT}
+
+# Install git for private GitHub dependencies
+RUN apt-get update && apt-get install -y \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
+
+# Copy CA certificate for Loki secure connection
+COPY mazza.vc_CA.pem .
 
 # Copy requirements and install dependencies
 COPY requirements.txt .

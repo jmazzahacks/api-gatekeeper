@@ -31,7 +31,8 @@ VERSION=$((CURRENT_VERSION + 1))
 echo "Building version $VERSION (incrementing from $CURRENT_VERSION)"
 
 # Build the image with optional --no-cache flag
-docker build $NO_CACHE --platform linux/amd64 -t ghcr.io/jmazzahacks/api-gatekeeper:$VERSION .
+# CR_PAT is required for installing mazza-base from private GitHub repo
+docker build $NO_CACHE --build-arg CR_PAT=$CR_PAT --platform linux/amd64 -t ghcr.io/jmazzahacks/api-gatekeeper:$VERSION .
 
 # Tag the same image as latest
 docker tag ghcr.io/jmazzahacks/api-gatekeeper:$VERSION ghcr.io/jmazzahacks/api-gatekeeper:latest
