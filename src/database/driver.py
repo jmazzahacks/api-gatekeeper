@@ -12,6 +12,7 @@ from psycopg2.extras import RealDictCursor
 from ..models.route import Route
 from ..models.client import Client
 from ..models.client_permission import ClientPermission
+from ..monitoring import DB_CONNECTION_POOL
 
 
 class AuthServiceDB:
@@ -48,15 +49,28 @@ class AuthServiceDB:
             user=db_user,
             password=db_password
         )
+        self._active_connections = 0
+        self._max_conn = max_conn
+
+        # Initialize pool metrics
+        DB_CONNECTION_POOL.labels(state='active').set(0)
+        DB_CONNECTION_POOL.labels(state='idle').set(min_conn)
+        DB_CONNECTION_POOL.labels(state='max').set(max_conn)
 
     @contextmanager
     def _get_connection(self):
         """Context manager for getting a connection from the pool."""
         conn = self.pool.getconn()
+        self._active_connections += 1
+        DB_CONNECTION_POOL.labels(state='active').set(self._active_connections)
+        DB_CONNECTION_POOL.labels(state='idle').set(self._max_conn - self._active_connections)
         try:
             yield conn
         finally:
             self.pool.putconn(conn)
+            self._active_connections -= 1
+            DB_CONNECTION_POOL.labels(state='active').set(self._active_connections)
+            DB_CONNECTION_POOL.labels(state='idle').set(self._max_conn - self._active_connections)
 
     @contextmanager
     def get_cursor(self, commit: bool = True, cursor_factory=None):

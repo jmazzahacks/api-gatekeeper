@@ -29,6 +29,7 @@ def main():
     print("Creating public route: GET /api/public...")
     public_route = Route.create_new(
         route_pattern='/api/public',
+        domain='*',
         service_name='test-service',
         methods={
             HttpMethod.GET: MethodAuth(auth_required=False)
@@ -42,6 +43,7 @@ def main():
     print("Creating API key protected route: GET,POST /api/protected...")
     api_key_route = Route.create_new(
         route_pattern='/api/protected',
+        domain='*',
         service_name='test-service',
         methods={
             HttpMethod.GET: MethodAuth(auth_required=True, auth_type=AuthType.API_KEY),
@@ -56,6 +58,7 @@ def main():
     print("Creating HMAC protected route: POST /api/secure...")
     hmac_route = Route.create_new(
         route_pattern='/api/secure',
+        domain='*',
         service_name='test-service',
         methods={
             HttpMethod.POST: MethodAuth(auth_required=True, auth_type=AuthType.HMAC)
@@ -122,26 +125,30 @@ def main():
     print("1. PUBLIC ROUTE (no auth required):")
     print("   curl -v http://localhost:7843/authz \\")
     print("     -H 'X-Original-URI: /api/public' \\")
-    print("     -H 'X-Original-Method: GET'")
+    print("     -H 'X-Original-Method: GET' \\")
+    print("     -H 'X-Original-Host: localhost'")
     print("   Expected: 200 OK")
     print()
     print("2. PROTECTED ROUTE with API KEY:")
     print("   curl -v http://localhost:7843/authz \\")
     print("     -H 'X-Original-URI: /api/protected' \\")
     print("     -H 'X-Original-Method: GET' \\")
+    print("     -H 'X-Original-Host: localhost' \\")
     print("     -H 'Authorization: Bearer test-api-key-12345'")
     print("   Expected: 200 OK (with X-Auth-Client-ID header)")
     print()
     print("3. PROTECTED ROUTE without credentials:")
     print("   curl -v http://localhost:7843/authz \\")
     print("     -H 'X-Original-URI: /api/protected' \\")
-    print("     -H 'X-Original-Method: GET'")
+    print("     -H 'X-Original-Method: GET' \\")
+    print("     -H 'X-Original-Host: localhost'")
     print("   Expected: 403 Forbidden")
     print()
     print("4. PROTECTED ROUTE with invalid API key:")
     print("   curl -v http://localhost:7843/authz \\")
     print("     -H 'X-Original-URI: /api/protected' \\")
     print("     -H 'X-Original-Method: GET' \\")
+    print("     -H 'X-Original-Host: localhost' \\")
     print("     -H 'Authorization: Bearer invalid-key'")
     print("   Expected: 403 Forbidden")
     print()
@@ -154,7 +161,8 @@ def main():
     print("6. NON-EXISTENT ROUTE:")
     print("   curl -v http://localhost:7843/authz \\")
     print("     -H 'X-Original-URI: /api/nonexistent' \\")
-    print("     -H 'X-Original-Method: GET'")
+    print("     -H 'X-Original-Method: GET' \\")
+    print("     -H 'X-Original-Host: localhost'")
     print("   Expected: 403 Forbidden (no_route_match)")
     print()
 

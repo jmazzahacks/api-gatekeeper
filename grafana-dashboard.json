@@ -74,7 +74,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by(result) (auth_requests_total{job=\"api-gatekeeper\"})",
+          "expr": "sum by(result) (auth_requests_total{job=~\"$job\"})",
           "legendFormat": "{{result}}",
           "range": true,
           "refId": "A"
@@ -163,7 +163,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(auth_requests_total{job=\"api-gatekeeper\"}[5m])) by (result)",
+          "expr": "sum(rate(auth_requests_total{job=~\"$job\"}[5m])) by (result)",
           "legendFormat": "{{result}}",
           "range": true,
           "refId": "A"
@@ -231,7 +231,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "100 * sum(rate(auth_requests_total{job=\"api-gatekeeper\",result=\"allowed\"}[5m])) / sum(rate(auth_requests_total{job=\"api-gatekeeper\"}[5m]))",
+          "expr": "100 * sum(rate(auth_requests_total{job=~\"$job\",result=\"allowed\"}[5m])) / sum(rate(auth_requests_total{job=~\"$job\"}[5m]))",
           "legendFormat": "Success Rate",
           "range": true,
           "refId": "A"
@@ -320,7 +320,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.50, sum(rate(auth_duration_seconds_bucket{job=\"api-gatekeeper\"}[5m])) by (le))",
+          "expr": "histogram_quantile(0.50, sum(rate(auth_duration_seconds_bucket{job=~\"$job\"}[5m])) by (le))",
           "legendFormat": "p50",
           "range": true,
           "refId": "A"
@@ -331,7 +331,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum(rate(auth_duration_seconds_bucket{job=\"api-gatekeeper\"}[5m])) by (le))",
+          "expr": "histogram_quantile(0.95, sum(rate(auth_duration_seconds_bucket{job=~\"$job\"}[5m])) by (le))",
           "legendFormat": "p95",
           "range": true,
           "refId": "B"
@@ -342,7 +342,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum(rate(auth_duration_seconds_bucket{job=\"api-gatekeeper\"}[5m])) by (le))",
+          "expr": "histogram_quantile(0.99, sum(rate(auth_duration_seconds_bucket{job=~\"$job\"}[5m])) by (le))",
           "legendFormat": "p99",
           "range": true,
           "refId": "C"
@@ -420,7 +420,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum(increase(auth_duration_seconds_bucket{job=\"api-gatekeeper\"}[5m])) by (le)",
+          "expr": "sum(increase(auth_duration_seconds_bucket{job=~\"$job\"}[5m])) by (le)",
           "format": "heatmap",
           "legendFormat": "{{le}}",
           "range": true,
@@ -510,7 +510,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(auth_errors_total{job=\"api-gatekeeper\"}[5m])) by (error_type)",
+          "expr": "sum(rate(auth_errors_total{job=~\"$job\"}[5m])) by (error_type)",
           "legendFormat": "{{error_type}}",
           "range": true,
           "refId": "A"
@@ -574,7 +574,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by(error_type) (auth_errors_total{job=\"api-gatekeeper\"})",
+          "expr": "sum by(error_type) (auth_errors_total{job=~\"$job\"})",
           "format": "table",
           "legendFormat": "__auto",
           "range": true,
@@ -681,7 +681,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "topk(10, sum by(route_pattern) (auth_requests_total{job=\"api-gatekeeper\"}))",
+          "expr": "topk(10, sum by(route_pattern) (auth_requests_total{job=~\"$job\"}))",
           "legendFormat": "{{route_pattern}}",
           "range": true,
           "refId": "A"
@@ -770,7 +770,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum(rate(auth_duration_seconds_bucket{job=\"api-gatekeeper\"}[5m])) by (route_pattern, le))",
+          "expr": "histogram_quantile(0.95, sum(rate(auth_duration_seconds_bucket{job=~\"$job\"}[5m])) by (route_pattern, le))",
           "legendFormat": "{{route_pattern}}",
           "range": true,
           "refId": "A"
@@ -859,7 +859,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(auth_requests_total{job=\"api-gatekeeper\"}[5m])) by (route_pattern, result)",
+          "expr": "sum(rate(auth_requests_total{job=~\"$job\"}[5m])) by (route_pattern, result)",
           "legendFormat": "{{route_pattern}} - {{result}}",
           "range": true,
           "refId": "A"
@@ -938,7 +938,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "up{job=\"api-gatekeeper\"}",
+          "expr": "up{job=~\"$job\"}",
           "legendFormat": "Database Status",
           "range": true,
           "refId": "A"
@@ -997,7 +997,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "count(count by(route_pattern) (auth_requests_total{job=\"api-gatekeeper\"}))",
+          "expr": "count(count by(route_pattern) (auth_requests_total{job=~\"$job\"}))",
           "legendFormat": "Routes",
           "range": true,
           "refId": "A"
@@ -1057,7 +1057,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "db_connection_pool_connections{job=\"api-gatekeeper\",state=\"active\"}",
+          "expr": "db_connection_pool_connections{job=~\"$job\",state=\"active\"}",
           "legendFormat": "Active Connections",
           "range": true,
           "refId": "A"
@@ -1117,7 +1117,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "time() - process_start_time_seconds{job=\"api-gatekeeper\"}",
+          "expr": "time() - process_start_time_seconds{job=~\"$job\"}",
           "legendFormat": "Uptime",
           "range": true,
           "refId": "A"
@@ -1154,6 +1154,33 @@
         "regex": "",
         "skipUrlSync": false,
         "type": "datasource"
+      },
+      {
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${DS_PROMETHEUS}"
+        },
+        "definition": "label_values(auth_requests_total, job)",
+        "hide": 0,
+        "includeAll": true,
+        "label": "Job",
+        "multi": true,
+        "name": "job",
+        "options": [],
+        "query": {
+          "query": "label_values(auth_requests_total, job)",
+          "refId": "StandardVariableQuery"
+        },
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
       }
     ]
   },

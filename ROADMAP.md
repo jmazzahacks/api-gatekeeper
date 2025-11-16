@@ -715,7 +715,7 @@ volumes:
 - [x] Health check endpoint implemented
 - [x] Deployed to production server (brutus.mazza.vc:7843)
 - [x] Production testing completed
-- [ ] Prometheus dashboard created
+- [ ] Prometheus dashboard validated with production traffic (next session)
 - [ ] Monitoring alerts configured
 - [ ] Performance baseline documented
 
@@ -913,20 +913,46 @@ python scripts/rotate_client_credentials.py <client_id>
 
 **Progress**: All 5 core phases completed! Multi-domain production-ready system with 162 passing tests.
 
+### Production Deployments
+
+#### Test Environment
+- **URL**: http://brutus.mazza.vc:7843
+- **Routes**: 3 test routes with wildcard domains (`*`)
+- **Clients**: 2 test clients (API key and HMAC)
+- **Purpose**: Integration testing and validation
+- **Status**: ✅ Operational
+
+#### Production: Arcana Crypto API
+- **URL**: https://arcana.mazza.vc
+- **Domain**: `arcana.mazza.vc` (domain-specific routing)
+- **Routes**:
+  - `/api/health` (exact route, API key required)
+  - `/api/*` (wildcard route protecting all API endpoints)
+- **Client**: Arcana Client (API key authentication)
+- **Protection**: All `/api/*` endpoints require Bearer token
+- **Integration**: Nginx → Cloudflare → API Gatekeeper → crypto-arcana-api backend
+- **Status**: ✅ Live and operational
+- **Deployed**: November 13, 2025
+
 ---
 
 ## Next Steps
 
 **Core Complete**: All 5 phases of the core system are done! 🎉
 
-The API Gatekeeper is now **production-ready** with:
-- Multi-domain routing support
-- HMAC and API key authentication
-- Fine-grained permissions
-- Prometheus metrics and structured logging
-- 162 comprehensive tests
-- Complete management CLI tools
-- Production deployment ready
+The API Gatekeeper is now **production-ready** and **protecting live APIs**:
+- ✅ Multi-domain routing support
+- ✅ HMAC and API key authentication
+- ✅ Fine-grained permissions
+- ✅ Prometheus metrics and structured logging
+- ✅ 162 comprehensive tests
+- ✅ Complete management CLI tools
+- ✅ Production deployment (arcana.mazza.vc)
+
+**Next Session Priority**:
+- Validate Prometheus dashboard with real production traffic
+- Configure monitoring alerts based on observed patterns
+- Document performance baseline from production metrics
 
 **Future Enhancements** (Phase 6):
 Choose from these optional enhancements based on your needs:
