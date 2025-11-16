@@ -45,6 +45,11 @@ def authorize():
         original_method = request.headers.get('X-Original-Method')
         original_host = request.headers.get('X-Original-Host', '')
 
+        # Get client IP address (nginx forwards via X-Real-IP or X-Forwarded-For)
+        client_ip = request.headers.get('X-Real-IP') or \
+                    request.headers.get('X-Forwarded-For', '').split(',')[0].strip() or \
+                    request.remote_addr or 'unknown'
+
         if not original_uri or not original_method:
             logger.warning("Missing X-Original-URI or X-Original-Method headers")
             return make_response('Missing required headers', 400)
@@ -109,6 +114,7 @@ def authorize():
 
             # Structured logging
             logger.info("Authorization result", extra={
+                'client_ip': client_ip,
                 'client_id': result.client_id or 'public',
                 'route': path,
                 'method': original_method,
@@ -143,6 +149,7 @@ def authorize():
 
             # Structured logging
             logger.warning("Authorization denied", extra={
+                'client_ip': client_ip,
                 'route': path,
                 'method': original_method,
                 'allowed': False,
@@ -159,7 +166,11 @@ def authorize():
         AUTH_ERRORS_TOTAL.labels(error_type=type(e).__name__).inc()
 
         # Structured error logging
+        error_client_ip = request.headers.get('X-Real-IP') or \
+                          request.headers.get('X-Forwarded-For', '').split(',')[0].strip() or \
+                          request.remote_addr or 'unknown'
         logger.error("Authorization error", extra={
+            'client_ip': error_client_ip,
             'route': request.headers.get('X-Original-URI', 'unknown'),
             'method': request.headers.get('X-Original-Method', 'unknown'),
             'error_type': type(e).__name__,

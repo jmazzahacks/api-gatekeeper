@@ -29,8 +29,25 @@ from src.auth import Authorizer
 from src.utils import get_db_connection
 from src.database.driver import AuthServiceDB
 from src.blueprints import authz_bp, health_bp, metrics_bp
+from pythonjsonlogger import jsonlogger
 
 logger = logging.getLogger(__name__)
+
+# Configure JSON formatter for structured logging
+# This ensures extra fields are included in log output
+def _configure_json_formatter():
+    """Add JSON formatter to root logger to capture extra fields."""
+    formatter = jsonlogger.JsonFormatter(
+        '%(asctime)s %(name)s %(levelname)s %(message)s',
+        timestamp=True
+    )
+
+    # Apply JSON formatter to all existing handlers
+    for handler in logging.root.handlers:
+        handler.setFormatter(formatter)
+
+# Apply JSON formatting (works with both local and Loki modes)
+_configure_json_formatter()
 
 
 def create_app(db: Optional[AuthServiceDB] = None) -> Flask:
