@@ -715,7 +715,9 @@ volumes:
 - [x] Health check endpoint implemented
 - [x] Deployed to production server (brutus.mazza.vc:7843)
 - [x] Production testing completed
-- [ ] Prometheus dashboard validated with production traffic (next session)
+- [x] Prometheus dashboard validated with production traffic
+- [x] Job variable selector for multi-instance support
+- [x] Database connection pool metrics tracking
 - [ ] Monitoring alerts configured
 - [ ] Performance baseline documented
 
@@ -948,10 +950,12 @@ The API Gatekeeper is now **production-ready** and **protecting live APIs**:
 - ✅ 162 comprehensive tests
 - ✅ Complete management CLI tools
 - ✅ Production deployment (arcana.mazza.vc)
+- ✅ Grafana dashboard with job selector for multi-instance monitoring
+- ✅ Database connection pool metrics tracking
+- ✅ Production traffic flowing through dashboard
 
-**Next Session Priority**:
-- Validate Prometheus dashboard with real production traffic
-- Configure monitoring alerts based on observed patterns
+**Next Priority**:
+- Configure monitoring alerts (high error rate, latency spikes, failed auth attempts)
 - Document performance baseline from production metrics
 
 **Future Enhancements** (Phase 6):

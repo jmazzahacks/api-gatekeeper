@@ -9,6 +9,7 @@ import time
 from functools import wraps
 from typing import Callable
 import logging
+import os
 from pythonjsonlogger import jsonlogger
 
 
@@ -54,15 +55,19 @@ def setup_json_logging(app):
     )
     log_handler.setFormatter(formatter)
 
+    # Get log level from environment variable (default: INFO)
+    log_level_name = os.environ.get('LOG_LEVEL', 'INFO').upper()
+    log_level = getattr(logging, log_level_name, logging.INFO)
+
     # Configure Flask logger
     app.logger.handlers = []
     app.logger.addHandler(log_handler)
-    app.logger.setLevel(logging.INFO)
+    app.logger.setLevel(log_level)
 
     # Configure root logger
     logging.root.handlers = []
     logging.root.addHandler(log_handler)
-    logging.root.setLevel(logging.INFO)
+    logging.root.setLevel(log_level)
 
     return app.logger
 
