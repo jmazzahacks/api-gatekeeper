@@ -17,5 +17,8 @@ byteforge-hmac
 prometheus-client
 python-json-logger
 
+# Rate limiting
+redis
+
 # Centralized logging with Loki
 mazza-base @ git+https://${CR_PAT}@github.com/mazza-vc/python-mazza-base.git@main

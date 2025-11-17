@@ -157,7 +157,9 @@ def authorize():
                 'duration_ms': round(duration * 1000, 2)
             })
 
-            return make_response(result.reason, 403)
+            # Return 429 for rate limit exceeded, 403 for other denials
+            status_code = 429 if result.reason == 'rate_limit_exceeded' else 403
+            return make_response(result.reason, status_code)
 
     except Exception as e:
         duration = time.time() - start_time

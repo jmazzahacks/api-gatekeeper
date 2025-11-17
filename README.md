@@ -8,13 +8,14 @@ A flexible authentication and authorization service designed to work with nginx'
 - **Route-Based Protection**: Define which endpoints require authentication
 - **Method-Level Permissions**: Control access per HTTP method (GET, POST, DELETE, etc.)
 - **Domain-Based Routing**: Multi-domain support with domain-specific access rules
+- **Rate Limiting**: Per-client request limits with Redis backend (rolling 24-hour windows)
 - **Client Management**: Issue credentials and manage client lifecycle
 - **Flexible Permissions**: Grant specific clients access to specific routes with specific methods
 - **Nginx Integration**: Works seamlessly with nginx `auth_request` directive
 - **Flask HTTP Endpoint**: Production-ready authorization service on port 7843
 - **Database-Driven**: All configuration in PostgreSQL - no code changes needed
 - **Complete Management Scripts**: Interactive CLI tools for all operations
-- **Comprehensive Testing**: 162 tests with 100% pass rate
+- **Comprehensive Testing**: 179 tests with 100% pass rate
 
 ## Architecture
 
@@ -351,12 +352,13 @@ python -m pytest -v
 **Test database:**
 - All tests use `api_auth_admin_test` database
 - Automatic cleanup between tests
-- **162 tests** covering:
+- **179 tests** covering:
   - Route models with domain matching (81 tests)
   - Clients and permissions (74 tests)
   - Authorization engine (21 tests)
   - Authentication handlers (40 tests)
   - Flask HTTP endpoint (16 tests)
+  - Rate limiting (17 tests)
 
 ## Project Structure
 
@@ -392,8 +394,10 @@ api-gatekeeper/
 │   ├── grant_permission.py  # Grant permissions
 │   ├── list_permissions.py  # List permissions
 │   ├── revoke_permission.py # Revoke permissions
+│   ├── set_rate_limit.py    # Set client rate limits
+│   ├── list_rate_limits.py  # List all rate limits
 │   └── setup_test_data.py   # Create test data
-├── tests/                   # Test suite (162 tests)
+├── tests/                   # Test suite (179 tests)
 │   ├── conftest.py          # Test fixtures
 │   ├── test_database_driver.py      # Route CRUD tests
 │   ├── test_client_operations.py    # Client/permission tests
@@ -431,6 +435,10 @@ No code changes or service restarts required.
 - `PG_PASSWORD`: Superuser password (only needed for setup)
 - `API_AUTH_ADMIN_PG_DB`: Database name (default: `api_auth_admin`)
 - `API_AUTH_ADMIN_PG_USER`: Application user (default: `api_auth_admin`)
+- `REDIS_HOST`: Redis server for rate limiting (if not set, rate limiting is disabled)
+- `REDIS_PORT`: Redis port (default: `6379`)
+- `REDIS_PASSWORD`: Redis password (optional)
+- `REDIS_DB`: Redis database number (default: `0`)
 
 ## Security Considerations
 
@@ -532,10 +540,17 @@ Currently using `schema.sql` with `CREATE TABLE IF NOT EXISTS`. For production, 
 - [x] Updated management scripts for domain configuration
 - [x] Comprehensive domain matching tests
 
+**Phase 6: Rate Limiting (Complete)**
+- [x] Redis-based rate limiting backend
+- [x] Rolling 24-hour window limits
+- [x] Per-client request quotas
+- [x] Rate limit management scripts
+- [x] 429 status code for exceeded limits
+- [x] Automatic disabling if Redis not configured
+
 ### Planned
 
-**Phase 6: Enhancements**
-- [ ] Rate limiting per client
+**Phase 7: Enhancements**
 - [ ] Audit logging
 - [ ] Credential rotation policies
 - [ ] Admin REST API
@@ -569,4 +584,4 @@ For issues and questions:
 
 ---
 
-**Status**: Phases 1-5 complete. Multi-domain routing operational. Production-ready with monitoring and structured logging. Ready for Phase 6 enhancements.
+**Status**: Phases 1-6 complete. Multi-domain routing and rate limiting operational. Production-ready with monitoring, structured logging, and per-client request limits. Ready for Phase 7 enhancements.

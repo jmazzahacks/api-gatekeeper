@@ -25,13 +25,56 @@ configure_logging(
     local_level=log_level
 )
 
+import redis
 from src.auth import Authorizer
 from src.utils import get_db_connection
 from src.database.driver import AuthServiceDB
 from src.blueprints import authz_bp, health_bp, metrics_bp
+from src.rate_limiter import RateLimiter, RedisBackend
 from pythonjsonlogger import jsonlogger
 
 logger = logging.getLogger(__name__)
+
+
+def _create_rate_limiter(db):
+    """
+    Create rate limiter with Redis backend.
+
+    If REDIS_HOST is not configured, rate limiting is disabled.
+    If REDIS_HOST is configured but connection fails, the application will exit.
+
+    Args:
+        db: Database driver instance
+
+    Returns:
+        RateLimiter instance or None if Redis not configured
+    """
+    redis_host = os.environ.get('REDIS_HOST')
+
+    if not redis_host:
+        logger.info("Rate limiting disabled (REDIS_HOST not configured)")
+        return None
+
+    redis_port = int(os.environ.get('REDIS_PORT', 6379))
+    redis_password = os.environ.get('REDIS_PASSWORD')
+    redis_db = int(os.environ.get('REDIS_DB', 0))
+
+    redis_client = redis.Redis(
+        host=redis_host,
+        port=redis_port,
+        password=redis_password,
+        db=redis_db,
+        decode_responses=True
+    )
+    redis_client.ping()
+
+    backend = RedisBackend(redis_client)
+    logger.info("Rate limiter initialized with Redis backend", extra={
+        'redis_host': redis_host,
+        'redis_port': redis_port
+    })
+
+    return RateLimiter(db, backend)
 
 # Configure JSON formatter for structured logging
 # This ensures extra fields are included in log output
@@ -50,12 +93,13 @@ def _configure_json_formatter():
 _configure_json_formatter()
 
 
-def create_app(db: Optional[AuthServiceDB] = None) -> Flask:
+def create_app(db: Optional[AuthServiceDB] = None, rate_limiter=None) -> Flask:
     """
     Create and configure Flask application.
 
     Args:
         db: Optional database instance (for testing). If None, creates new connection.
+        rate_limiter: Optional rate limiter instance (for testing). If None, creates based on env.
 
     Returns:
         Configured Flask application
@@ -66,11 +110,16 @@ def create_app(db: Optional[AuthServiceDB] = None) -> Flask:
     if db is None:
         db = get_db_connection(verbose=False)
 
-    authorizer = Authorizer(db)
+    # Initialize rate limiter if not provided
+    if rate_limiter is None:
+        rate_limiter = _create_rate_limiter(db)
+
+    authorizer = Authorizer(db, rate_limiter=rate_limiter)
 
     # Store in app config for access in route handlers
     app.config['DB'] = db
     app.config['AUTHORIZER'] = authorizer
+    app.config['RATE_LIMITER'] = rate_limiter
 
     # Register blueprints
     app.register_blueprint(authz_bp)

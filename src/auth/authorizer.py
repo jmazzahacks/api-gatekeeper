@@ -27,7 +27,8 @@ class Authorizer:
         self,
         db: AuthServiceDB,
         hmac_handler: Optional[HMACHandler] = None,
-        api_key_handler: Optional[APIKeyHandler] = None
+        api_key_handler: Optional[APIKeyHandler] = None,
+        rate_limiter = None
     ):
         """
         Initialize the authorizer.
@@ -36,10 +37,12 @@ class Authorizer:
             db: Database driver instance
             hmac_handler: Optional HMAC authentication handler (created if not provided)
             api_key_handler: Optional API key handler (created if not provided)
+            rate_limiter: Optional rate limiter for enforcing request limits
         """
         self.db = db
         self.hmac_handler = hmac_handler or HMACHandler(db)
         self.api_key_handler = api_key_handler or APIKeyHandler()
+        self.rate_limiter = rate_limiter
 
     def authorize_request(
         self,
@@ -120,7 +123,24 @@ class Authorizer:
             )
 
         # Step 6: Check permissions
-        return self._check_permission(client, route, method)
+        permission_result = self._check_permission(client, route, method)
+
+        if not permission_result.allowed:
+            return permission_result
+
+        # Step 7: Check rate limits (if rate limiter is configured)
+        if self.rate_limiter:
+            is_allowed, reason = self.rate_limiter.check_rate_limit(client.client_id)
+            if not is_allowed:
+                return AuthResult(
+                    allowed=False,
+                    reason=reason,
+                    client_id=client.client_id,
+                    client_name=client.client_name,
+                    matched_route_id=route.route_id
+                )
+
+        return permission_result
 
     def _match_routes(self, path: str, domain: Optional[str] = None) -> List[Route]:
         """

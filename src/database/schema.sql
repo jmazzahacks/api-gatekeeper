@@ -134,3 +134,21 @@ COMMENT ON COLUMN client_permissions.client_id IS 'ID of the client this permiss
 COMMENT ON COLUMN client_permissions.route_id IS 'ID of the route this permission grants access to';
 COMMENT ON COLUMN client_permissions.allowed_methods IS 'Array of HTTP methods the client can use (e.g., {GET, POST})';
 COMMENT ON COLUMN client_permissions.created_at IS 'Unix timestamp (seconds since epoch) when permission was created';
+
+-- Rate Limits table: Per-client request rate limits
+CREATE TABLE IF NOT EXISTS rate_limits (
+    client_id UUID PRIMARY KEY REFERENCES clients(client_id) ON DELETE CASCADE,
+    requests_per_day INT NOT NULL,
+    created_at BIGINT NOT NULL DEFAULT extract(epoch from now())::bigint,
+    updated_at BIGINT NOT NULL DEFAULT extract(epoch from now())::bigint,
+
+    -- Constraints
+    CONSTRAINT requests_per_day_positive CHECK (requests_per_day > 0)
+);
+
+-- Comments for documentation
+COMMENT ON TABLE rate_limits IS 'Per-client rate limiting configuration';
+COMMENT ON COLUMN rate_limits.client_id IS 'Client this rate limit applies to';
+COMMENT ON COLUMN rate_limits.requests_per_day IS 'Maximum number of requests allowed per day';
+COMMENT ON COLUMN rate_limits.created_at IS 'Unix timestamp (seconds since epoch) when rate limit was created';
+COMMENT ON COLUMN rate_limits.updated_at IS 'Unix timestamp (seconds since epoch) when rate limit was last updated';

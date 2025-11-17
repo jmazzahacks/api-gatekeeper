@@ -12,6 +12,7 @@ from psycopg2.extras import RealDictCursor
 from ..models.route import Route
 from ..models.client import Client
 from ..models.client_permission import ClientPermission
+from ..models.rate_limit import RateLimit
 from ..monitoring import DB_CONNECTION_POOL
 
 
@@ -580,6 +581,85 @@ class AuthServiceDB:
             cursor.execute(
                 "DELETE FROM client_permissions WHERE client_id = %s AND route_id = %s",
                 (client_id, route_id)
+            )
+            return cursor.rowcount > 0
+
+    # ========== Rate Limit Operations ==========
+
+    def load_rate_limit_by_client(self, client_id: str) -> Optional[RateLimit]:
+        """
+        Load the rate limit configuration for a client.
+
+        Args:
+            client_id: Client identifier
+
+        Returns:
+            RateLimit object if found, None otherwise
+        """
+        with self.get_cursor(commit=False, cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                "SELECT * FROM rate_limits WHERE client_id = %s",
+                (client_id,)
+            )
+            result = cursor.fetchone()
+            if not result:
+                return None
+            return RateLimit.from_dict(dict(result))
+
+    def load_all_rate_limits(self) -> List[RateLimit]:
+        """
+        Load all rate limit configurations.
+
+        Returns:
+            List of all RateLimit objects
+        """
+        with self.get_cursor(commit=False, cursor_factory=RealDictCursor) as cursor:
+            cursor.execute("SELECT * FROM rate_limits ORDER BY client_id")
+            results = cursor.fetchall()
+            return [RateLimit.from_dict(dict(row)) for row in results]
+
+    def save_rate_limit(self, rate_limit: RateLimit) -> str:
+        """
+        Insert or update a rate limit configuration.
+
+        Args:
+            rate_limit: RateLimit object to save
+
+        Returns:
+            The client_id
+        """
+        rate_limit_dict = rate_limit.to_dict()
+
+        with self.get_cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO rate_limits (client_id, requests_per_day, created_at, updated_at)
+                VALUES (%(client_id)s, %(requests_per_day)s, %(created_at)s, %(updated_at)s)
+                ON CONFLICT (client_id)
+                DO UPDATE SET
+                    requests_per_day = EXCLUDED.requests_per_day,
+                    updated_at = EXCLUDED.updated_at
+                RETURNING client_id
+                """,
+                rate_limit_dict
+            )
+            result = cursor.fetchone()
+            return str(result[0])
+
+    def delete_rate_limit(self, client_id: str) -> bool:
+        """
+        Delete a rate limit configuration for a client.
+
+        Args:
+            client_id: Client identifier
+
+        Returns:
+            True if rate limit was deleted, False if not found
+        """
+        with self.get_cursor() as cursor:
+            cursor.execute(
+                "DELETE FROM rate_limits WHERE client_id = %s",
+                (client_id,)
             )
             return cursor.rowcount > 0
 
