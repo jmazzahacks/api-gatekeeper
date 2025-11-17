@@ -40,7 +40,7 @@ Routes can be configured with domain-specific access rules, enabling multi-domai
 
 **Priority**: When multiple routes match, exact domain matches take priority over wildcard subdomains, which take priority over any-domain wildcards.
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed architecture documentation.
+See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for detailed architecture documentation.
 
 ## Quick Start
 
@@ -69,7 +69,7 @@ pip install -r dev-requirements.txt
 pip install -e .
 
 # Set up environment variables
-cp example.env .env
+cp dot.env.example .env
 # Edit .env with your PostgreSQL credentials
 ```
 
@@ -88,7 +88,7 @@ python dev_scripts/setup_database.py
 python dev_scripts/setup_database.py --test-db
 ```
 
-See [DATABASE_SETUP.md](DATABASE_SETUP.md) for detailed setup instructions.
+See [DATABASE_SETUP.md](docs/DATABASE_SETUP.md) for detailed setup instructions.
 
 ## Running the Server
 
@@ -559,9 +559,9 @@ Currently using `schema.sql` with `CREATE TABLE IF NOT EXISTS`. For production, 
 
 ## Documentation
 
-- [ARCHITECTURE.md](ARCHITECTURE.md) - System architecture and design principles
-- [DATABASE_SETUP.md](DATABASE_SETUP.md) - Detailed database setup instructions
-- [ROADMAP.md](ROADMAP.md) - Development roadmap with phase breakdown
+- [ARCHITECTURE.md](docs/ARCHITECTURE.md) - System architecture and design principles
+- [DATABASE_SETUP.md](docs/DATABASE_SETUP.md) - Detailed database setup instructions
+- [ROADMAP.md](docs/ROADMAP.md) - Development roadmap with phase breakdown
 - [nginx/auth-example.conf](nginx/auth-example.conf) - Nginx integration example
 
 ## Contributing
@@ -580,7 +580,7 @@ Currently using `schema.sql` with `CREATE TABLE IF NOT EXISTS`. For production, 
 
 For issues and questions:
 - GitHub Issues: [repository-url]/issues
-- Documentation: See ARCHITECTURE.md for detailed system design
+- Documentation: See docs/ARCHITECTURE.md for detailed system design
 
 ---
 

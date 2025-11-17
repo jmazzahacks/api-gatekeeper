@@ -831,16 +831,41 @@ Routes now support **domain-based matching** in addition to path matching:
 
 ---
 
-## Phase 6: Enhancement Features (Future)
+## Phase 6: Rate Limiting ✅ **COMPLETED**
+
+**Goal**: Per-client request limits with Redis backend
+
+### Completed Implementation
+
+- **Database Schema**: rate_limits table with client_id FK and requests_per_day
+- **RateLimit Model**: Validation, CRUD helpers, and serialization
+- **Redis Backend**: Rolling 24-hour windows with TTL expiration (86400 seconds)
+- **RateLimiter Service**: Config caching, increment_and_check, usage tracking
+- **Authorizer Integration**: Rate limit check after permission verification
+- **Flask Integration**: Returns 429 status for rate_limit_exceeded
+- **Management Scripts**: set_rate_limit.py and list_rate_limits.py
+- **Optional Feature**: Auto-disabled if REDIS_HOST not configured, hard fail if configured but unreachable
+- **Test Coverage**: 17 comprehensive tests (179 total)
+
+### Success Criteria
+
+- [x] Rate limits table schema with foreign key cascade
+- [x] RateLimit model with validation
+- [x] Redis-based rolling 24-hour window counting
+- [x] Per-client request quotas stored in PostgreSQL
+- [x] Config caching to reduce DB lookups
+- [x] 429 HTTP status for exceeded limits
+- [x] Management scripts for rate limit configuration
+- [x] Automatic disable if Redis not configured
+- [x] Hard fail if Redis configured but unreachable
+- [x] Comprehensive test suite (17 tests)
+- [x] Documentation updated
+
+---
+
+## Phase 7: Enhancement Features (Future)
 
 **Nice-to-haves after core is production-ready**
-
-### Rate Limiting
-
-**Per-client rate limits**:
-- Add `rate_limit` field to clients table
-- Implement sliding window or token bucket algorithm
-- Return 429 Too Many Requests when exceeded
 
 ### Admin REST API
 
@@ -865,16 +890,6 @@ DELETE /api/permissions/:id  # Revoke permission
 - Reason
 - Store in separate audit table
 
-### Credential Rotation
-
-**Tools for rotating credentials**:
-```bash
-python scripts/rotate_client_credentials.py <client_id>
-# Generates new credentials
-# Updates database
-# Returns both old and new (grace period)
-```
-
 ### Web Dashboard
 
 **Browser-based administration**:
@@ -891,14 +906,6 @@ python scripts/rotate_client_credentials.py <client_id>
 - Go client
 - Request signing helpers
 
-### Webhooks
-
-**Event notifications**:
-- Client suspended
-- Rate limit exceeded
-- Authentication failures threshold
-- POST to configured webhook URL
-
 ---
 
 ## Timeline Estimate
@@ -910,10 +917,11 @@ python scripts/rotate_client_credentials.py <client_id>
 | Phase 3: Flask HTTP Endpoint | 1 day | ✅ COMPLETED | Phase 2 |
 | Phase 4: Production Readiness | 1 day | ✅ COMPLETED | Phase 3 |
 | Phase 5: Domain-Based Routing | 1.5 days | ✅ COMPLETED | Phase 4 |
-| **Core Complete** | **5.5 days** | ✅ **ALL DONE** | |
-| Phase 6: Enhancements | Ongoing | 🎯 NEXT | Phase 5 |
+| Phase 6: Rate Limiting | 0.5 days | ✅ COMPLETED | Phase 5 |
+| **Core Complete** | **6 days** | ✅ **ALL DONE** | |
+| Phase 7: Enhancements | Ongoing | 🎯 NEXT | Phase 6 |
 
-**Progress**: All 5 core phases completed! Multi-domain production-ready system with 162 passing tests.
+**Progress**: All 6 core phases completed! Multi-domain production-ready system with rate limiting and 179 passing tests.
 
 ### Production Deployments
 
@@ -940,14 +948,15 @@ python scripts/rotate_client_credentials.py <client_id>
 
 ## Next Steps
 
-**Core Complete**: All 5 phases of the core system are done! 🎉
+**Core Complete**: All 6 phases of the core system are done! 🎉
 
 The API Gatekeeper is now **production-ready** and **protecting live APIs**:
 - ✅ Multi-domain routing support
 - ✅ HMAC and API key authentication
 - ✅ Fine-grained permissions
+- ✅ Per-client rate limiting with Redis
 - ✅ Prometheus metrics and structured logging
-- ✅ 162 comprehensive tests
+- ✅ 179 comprehensive tests
 - ✅ Complete management CLI tools
 - ✅ Production deployment (arcana.mazza.vc)
 - ✅ Grafana dashboard with job selector for multi-instance monitoring
@@ -956,14 +965,10 @@ The API Gatekeeper is now **production-ready** and **protecting live APIs**:
 
 **Next Priority**:
 - Configure monitoring alerts (high error rate, latency spikes, failed auth attempts)
-- Document performance baseline from production metrics
 
-**Future Enhancements** (Phase 6):
+**Future Enhancements** (Phase 7):
 Choose from these optional enhancements based on your needs:
-- Rate limiting per client
 - Admin REST API (alternative to CLI)
 - Audit logging (track all access)
-- Credential rotation tools
 - Web dashboard
 - Client SDKs (Python, JavaScript, Go)
-- Webhooks for event notifications
