@@ -116,7 +116,10 @@ def authorize():
             logger.info("Authorization result", extra={
                 'client_ip': client_ip,
                 'client_id': result.client_id or 'public',
+                'client_name': result.client_name,
                 'route': path,
+                'domain': domain,
+                'route_id': result.matched_route_id,
                 'method': original_method,
                 'allowed': True,
                 'reason': result.reason,
@@ -150,7 +153,11 @@ def authorize():
             # Structured logging
             logger.warning("Authorization denied", extra={
                 'client_ip': client_ip,
+                'client_id': result.client_id,
+                'client_name': result.client_name,
                 'route': path,
+                'domain': domain,
+                'route_id': result.matched_route_id,
                 'method': original_method,
                 'allowed': False,
                 'reason': result.reason,
