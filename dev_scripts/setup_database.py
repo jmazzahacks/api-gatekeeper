@@ -4,8 +4,9 @@ Database setup script for API_AUTH_ADMIN
 Creates the api_auth_admin database and user with proper permissions, then applies database/schema.sql
 
 Usage:
-  python setup_database.py                 # Sets up main 'api_auth_admin' database
-  python setup_database.py --test-db       # Sets up test 'api_auth_admin_test' database
+  python setup_database.py                           # Sets up main 'api_auth_admin' database
+  python setup_database.py --test-db                 # Sets up test 'api_auth_admin_test' database
+  python setup_database.py --pg-password mypassword  # Pass postgres password via command line
 """
 
 import os
@@ -24,12 +25,14 @@ def main():
     parser = argparse.ArgumentParser(description='Setup API_AUTH_ADMIN database')
     parser.add_argument('--test-db', action='store_true',
                        help='Create api_auth_admin_test database instead of main api_auth_admin database')
+    parser.add_argument('--pg-password', type=str,
+                       help='PostgreSQL superuser password (overrides PG_PASSWORD env var)')
     args = parser.parse_args()
 
     pg_host = os.environ.get('POSTGRES_HOST', 'localhost')
     pg_port = os.environ.get('POSTGRES_PORT', '5432')
     pg_user = os.environ.get('POSTGRES_USER', 'postgres')
-    pg_password = os.environ.get('PG_PASSWORD', None)
+    pg_password = args.pg_password or os.environ.get('PG_PASSWORD', None)
 
     if args.test_db:
         api_auth_admin_db = 'api_auth_admin_test'
