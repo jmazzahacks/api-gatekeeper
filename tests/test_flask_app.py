@@ -11,13 +11,15 @@ from src.models.route import Route, HttpMethod
 from src.models.method_auth import MethodAuth, AuthType
 from src.models.client import Client, ClientStatus
 from src.models.client_permission import ClientPermission
-from src.auth import RequestSigner
+from src.auth import RequestSigner, HMACHandler
 
 
 @pytest.fixture
 def client(clean_db):
     """Flask test client with test database."""
-    app = create_app(db=clean_db)
+    # Use in-memory nonce storage for tests (no Redis dependency)
+    hmac_handler = HMACHandler(clean_db, nonce_storage={})
+    app = create_app(db=clean_db, hmac_handler=hmac_handler, rate_limiter=None)
     app.config['TESTING'] = True
     with app.test_client() as client:
         yield client
