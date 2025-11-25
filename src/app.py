@@ -35,6 +35,9 @@ from pythonjsonlogger import jsonlogger
 
 logger = logging.getLogger(__name__)
 
+# Sentinel value to distinguish "not provided" from "explicitly None"
+_NOT_PROVIDED = object()
+
 
 def _create_redis_client():
     """
@@ -135,18 +138,18 @@ _configure_json_formatter()
 
 def create_app(
     db: Optional[AuthServiceDB] = None,
-    redis_client=None,
-    rate_limiter=None,
-    hmac_handler=None
+    redis_client=_NOT_PROVIDED,
+    rate_limiter=_NOT_PROVIDED,
+    hmac_handler=_NOT_PROVIDED
 ) -> Flask:
     """
     Create and configure Flask application.
 
     Args:
         db: Optional database instance (for testing). If None, creates new connection.
-        redis_client: Optional Redis client (for testing). If None, creates based on env.
-        rate_limiter: Optional rate limiter instance (for testing). If None, creates based on env.
-        hmac_handler: Optional HMAC handler instance (for testing). If None, creates based on env.
+        redis_client: Redis client. If not provided, creates based on env. Pass None to disable.
+        rate_limiter: Rate limiter instance. If not provided, creates based on env. Pass None to disable.
+        hmac_handler: HMAC handler instance. If not provided, creates based on env.
 
     Returns:
         Configured Flask application
@@ -157,16 +160,16 @@ def create_app(
     if db is None:
         db = get_db_connection(verbose=False)
 
-    # Initialize Redis client if not provided
-    if redis_client is None:
+    # Initialize Redis client if not explicitly provided
+    if redis_client is _NOT_PROVIDED:
         redis_client = _create_redis_client()
 
-    # Initialize rate limiter if not provided
-    if rate_limiter is None:
+    # Initialize rate limiter if not explicitly provided
+    if rate_limiter is _NOT_PROVIDED:
         rate_limiter = _create_rate_limiter(db, redis_client)
 
-    # Initialize HMAC handler with Redis nonce storage if not provided
-    if hmac_handler is None:
+    # Initialize HMAC handler with Redis nonce storage if not explicitly provided
+    if hmac_handler is _NOT_PROVIDED:
         hmac_handler = _create_hmac_handler(db, redis_client)
 
     # Create authorizer with all components

@@ -18,8 +18,9 @@ from src.auth import RequestSigner, HMACHandler
 def client(clean_db):
     """Flask test client with test database."""
     # Use in-memory nonce storage for tests (no Redis dependency)
+    # Explicitly pass redis_client=None to avoid connecting to real Redis
     hmac_handler = HMACHandler(clean_db, nonce_storage={})
-    app = create_app(db=clean_db, hmac_handler=hmac_handler, rate_limiter=None)
+    app = create_app(db=clean_db, redis_client=None, hmac_handler=hmac_handler, rate_limiter=None)
     app.config['TESTING'] = True
     with app.test_client() as client:
         yield client
@@ -36,6 +37,7 @@ class TestHealthEndpoint:
         data = response.get_json()
         assert data['status'] == 'healthy'
         assert data['database'] == 'connected'
+        assert data['redis'] == 'not_configured'  # No Redis in test fixture
         assert 'routes_configured' in data
         assert 'clients_configured' in data
         assert isinstance(data['routes_configured'], int)
@@ -72,6 +74,50 @@ class TestHealthEndpoint:
         data = response.get_json()
         assert data['routes_configured'] == 2
         assert data['clients_configured'] == 1
+
+    def test_health_check_with_redis(self, clean_db):
+        """Test health check reports Redis status when configured."""
+        from unittest.mock import Mock
+
+        # Create mock Redis client
+        mock_redis = Mock()
+        mock_redis.ping.return_value = True
+
+        hmac_handler = HMACHandler(clean_db, nonce_storage={})
+        app = create_app(db=clean_db, redis_client=mock_redis, hmac_handler=hmac_handler, rate_limiter=None)
+        app.config['TESTING'] = True
+
+        with app.test_client() as test_client:
+            response = test_client.get('/health')
+
+            assert response.status_code == 200
+            data = response.get_json()
+            assert data['status'] == 'healthy'
+            assert data['redis'] == 'connected'
+            mock_redis.ping.assert_called_once()
+
+    def test_health_check_redis_failure(self, clean_db):
+        """Test health check returns 503 when Redis connection fails."""
+        from unittest.mock import Mock
+        import redis
+
+        # Create mock Redis client that fails ping
+        mock_redis = Mock()
+        mock_redis.ping.side_effect = redis.ConnectionError("Connection refused")
+
+        hmac_handler = HMACHandler(clean_db, nonce_storage={})
+        app = create_app(db=clean_db, redis_client=mock_redis, hmac_handler=hmac_handler, rate_limiter=None)
+        app.config['TESTING'] = True
+
+        with app.test_client() as test_client:
+            response = test_client.get('/health')
+
+            assert response.status_code == 503
+            data = response.get_json()
+            assert data['status'] == 'unhealthy'
+            assert data['database'] == 'connected'
+            assert data['redis'] == 'error'
+            assert data['message'] == 'Redis connection failed'
 
 
 class TestAuthzEndpointPublicRoutes:
