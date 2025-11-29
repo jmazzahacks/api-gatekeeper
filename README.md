@@ -9,13 +9,16 @@ A flexible authentication and authorization service designed to work with nginx'
 - **Method-Level Permissions**: Control access per HTTP method (GET, POST, DELETE, etc.)
 - **Domain-Based Routing**: Multi-domain support with domain-specific access rules
 - **Rate Limiting**: Per-client request limits with Redis backend (rolling 24-hour windows)
+- **Replay Protection**: Redis-backed HMAC nonce storage for multi-instance deployments
 - **Client Management**: Issue credentials and manage client lifecycle
 - **Flexible Permissions**: Grant specific clients access to specific routes with specific methods
 - **Nginx Integration**: Works seamlessly with nginx `auth_request` directive
 - **Flask HTTP Endpoint**: Production-ready authorization service on port 7843
 - **Database-Driven**: All configuration in PostgreSQL - no code changes needed
 - **Complete Management Scripts**: Interactive CLI tools for all operations
-- **Comprehensive Testing**: 179 tests with 100% pass rate
+- **Audit Logging**: Comprehensive structured logging via Loki with full request context
+- **Prometheus Metrics**: Built-in metrics endpoint for monitoring and alerting
+- **Comprehensive Testing**: 194 tests with 100% pass rate
 
 ## Architecture
 
@@ -101,9 +104,10 @@ source bin/activate
 python src/app.py
 ```
 
-The server starts on **port 7843** with two endpoints:
+The server starts on **port 7843** with three endpoints:
 - **`/authz`**: Authorization endpoint (for nginx auth_request)
-- **`/health`**: Health check endpoint (for monitoring)
+- **`/health`**: Health check endpoint (verifies database and Redis connectivity)
+- **`/metrics`**: Prometheus metrics endpoint (for monitoring and alerting)
 
 ### Testing the Server
 
@@ -352,13 +356,15 @@ python -m pytest -v
 **Test database:**
 - All tests use `api_auth_admin_test` database
 - Automatic cleanup between tests
-- **179 tests** covering:
-  - Route models with domain matching (81 tests)
-  - Clients and permissions (74 tests)
+- **194 tests** covering:
+  - Route models with domain matching (28 tests)
+  - Database driver operations (22 tests)
+  - Client operations and permissions (30 tests)
   - Authorization engine (21 tests)
   - Authentication handlers (40 tests)
-  - Flask HTTP endpoint (16 tests)
+  - Flask HTTP endpoints (23 tests)
   - Rate limiting (17 tests)
+  - Nonce storage (13 tests)
 
 ## Project Structure
 
@@ -366,22 +372,34 @@ python -m pytest -v
 api-gatekeeper/
 ├── src/
 │   ├── app.py               # Flask HTTP application
+│   ├── monitoring.py        # Prometheus metrics
+│   ├── rate_limiter.py      # Redis-backed rate limiting
 │   ├── models/              # Data models
 │   │   ├── route.py         # Route with pattern matching
 │   │   ├── method_auth.py   # Auth requirements per HTTP method
 │   │   ├── client.py        # Client with credentials
-│   │   └── client_permission.py  # Permission linking
+│   │   ├── client_permission.py  # Permission linking
+│   │   └── rate_limit.py    # Rate limit configuration
 │   ├── auth/                # Authorization & authentication
 │   │   ├── models.py        # AuthResult model
 │   │   ├── authorizer.py    # Authorization engine
 │   │   ├── hmac_handler.py  # HMAC signature validation
 │   │   ├── api_key_handler.py   # API key extraction
+│   │   ├── nonce_storage.py     # Redis nonce storage for replay protection
 │   │   └── request_signer.py    # Test utility for HMAC
+│   ├── blueprints/          # Flask blueprints
+│   │   ├── authz.py         # Authorization endpoint
+│   │   ├── health.py        # Health check endpoint
+│   │   └── metrics.py       # Prometheus metrics endpoint
 │   ├── database/            # Database layer
 │   │   ├── schema.sql       # PostgreSQL schema
 │   │   └── driver.py        # CRUD operations with connection pooling
 │   └── utils/               # Utilities
 │       └── db_connection.py # Database connection helper
+├── docs/                    # Documentation
+│   ├── ARCHITECTURE.md      # System architecture
+│   ├── DATABASE_SETUP.md    # Database setup guide
+│   └── ROADMAP.md           # Development roadmap
 ├── nginx/                   # Nginx integration
 │   └── auth-example.conf    # Example nginx config with auth_request
 ├── scripts/                 # Management scripts
@@ -397,14 +415,16 @@ api-gatekeeper/
 │   ├── set_rate_limit.py    # Set client rate limits
 │   ├── list_rate_limits.py  # List all rate limits
 │   └── setup_test_data.py   # Create test data
-├── tests/                   # Test suite (179 tests)
+├── tests/                   # Test suite (194 tests)
 │   ├── conftest.py          # Test fixtures
-│   ├── test_database_driver.py      # Route CRUD tests
+│   ├── test_database_driver.py      # Database CRUD tests
 │   ├── test_client_operations.py    # Client/permission tests
 │   ├── test_route_model.py          # Model validation and domain matching tests
 │   ├── test_authorizer.py           # Authorization engine tests
 │   ├── test_auth_handlers.py        # Authentication handler tests
-│   └── test_flask_app.py            # Flask endpoint tests
+│   ├── test_flask_app.py            # Flask endpoint tests
+│   ├── test_rate_limiter.py         # Rate limiting tests
+│   └── test_nonce_storage.py        # Nonce storage tests
 └── dev_scripts/             # Development utilities
     └── setup_database.py    # Database initialization
 ```
@@ -548,11 +568,16 @@ Currently using `schema.sql` with `CREATE TABLE IF NOT EXISTS`. For production, 
 - [x] 429 status code for exceeded limits
 - [x] Automatic disabling if Redis not configured
 
+**Phase 7: Audit Logging (Complete)**
+- [x] Comprehensive structured logging via Loki
+- [x] Full request context (client_id, client_name, route, domain, method)
+- [x] Decision tracking (allowed/denied with reason)
+- [x] Client IP and request duration logging
+- [x] Queryable audit trail in Grafana
+
 ### Planned
 
-**Phase 7: Enhancements**
-- [ ] Audit logging
-- [ ] Credential rotation policies
+**Phase 8: Enhancements**
 - [ ] Admin REST API
 - [ ] Web dashboard
 - [ ] Client SDKs
@@ -584,4 +609,4 @@ For issues and questions:
 
 ---
 
-**Status**: Phases 1-6 complete. Multi-domain routing and rate limiting operational. Production-ready with monitoring, structured logging, and per-client request limits. Ready for Phase 7 enhancements.
+**Status**: Phases 1-7 complete. Production-ready with multi-domain routing, rate limiting, HMAC replay protection, comprehensive audit logging, and Prometheus metrics. 194 tests passing. Ready for Phase 8 enhancements.
