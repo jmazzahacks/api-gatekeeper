@@ -43,7 +43,7 @@ def main():
     api_auth_admin_password = os.environ.get('API_AUTH_ADMIN_PG_PASSWORD', None)
 
     if pg_password is None:
-        print("Error: PG_PASSWORD environment variable is required")
+        print("Error: PostgreSQL superuser password required. Use --pg-password or set PG_PASSWORD env var")
         sys.exit(1)
     if api_auth_admin_password is None:
         print("Error: API_AUTH_ADMIN_PG_PASSWORD environment variable is required")
