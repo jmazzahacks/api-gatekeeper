@@ -4,9 +4,10 @@ FROM python:3.13-slim
 ARG CR_PAT
 ENV CR_PAT=${CR_PAT}
 
-# Install git for private GitHub dependencies
+# Install git for private GitHub dependencies and curl for health checks
 RUN apt-get update && apt-get install -y \
     git \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
