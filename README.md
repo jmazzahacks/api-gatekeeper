@@ -334,6 +334,62 @@ python scripts/list_permissions.py --route <route_id>
 # Shows: All clients with access to /api/products/*
 ```
 
+## Client Integration
+
+Once you've created a client and granted permissions, here's how to authenticate API requests.
+
+### API Key Authentication
+
+Send the API key in the `Authorization` header using the `Bearer` scheme:
+
+```bash
+curl -X GET https://api.example.com/api/products \
+  -H "Authorization: Bearer your-api-key-here"
+```
+
+**Python example:**
+```python
+import requests
+
+headers = {
+    "Authorization": "Bearer your-api-key-here"
+}
+
+response = requests.get("https://api.example.com/api/products", headers=headers)
+```
+
+**JavaScript example:**
+```javascript
+const response = await fetch("https://api.example.com/api/products", {
+  headers: {
+    "Authorization": "Bearer your-api-key-here"
+  }
+});
+```
+
+### HMAC Authentication
+
+For HMAC-protected routes, generate a signature using your shared secret:
+
+```bash
+# Authorization header format:
+# HMAC client_id="<id>",timestamp="<epoch>",nonce="<uuid>",signature="<hex>"
+```
+
+**Signature computation:**
+1. Create message: `{METHOD}\n{PATH}\n{TIMESTAMP}\n{NONCE}\n{BODY}`
+2. Compute HMAC-SHA256 with your shared secret
+3. Include all components in the Authorization header
+
+See `src/auth/request_signer.py` for a reference implementation.
+
+### Response Headers
+
+On successful authentication, the backend receives these headers from nginx:
+- `X-Client-ID`: The authenticated client's UUID
+- `X-Client-Name`: The client's display name
+- `X-Route-ID`: The matched route's UUID
+
 ## Testing
 
 Run the test suite:
