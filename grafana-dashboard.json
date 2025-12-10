@@ -24,8 +24,8 @@
   "panels": [
     {
       "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "type": "loki",
+        "uid": "${DS_LOKI}"
       },
       "fieldConfig": {
         "defaults": {
@@ -41,15 +41,46 @@
           },
           "mappings": []
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "allowed"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "green",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "denied"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "red",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 8,
-        "w": 8,
+        "w": 6,
         "x": 0,
         "y": 0
       },
-      "id": 1,
+      "id": 15,
       "options": {
         "displayLabels": ["name", "percent"],
         "legend": {
@@ -60,7 +91,7 @@
         "pieType": "pie",
         "reduceOptions": {
           "values": false,
-          "calcs": ["lastNotNull"]
+          "calcs": ["sum"]
         },
         "tooltip": {
           "mode": "single",
@@ -70,17 +101,30 @@
       "targets": [
         {
           "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "type": "loki",
+            "uid": "${DS_LOKI}"
           },
           "editorMode": "code",
-          "expr": "sum by(result) (auth_requests_total{job=~\"$job\"})",
-          "legendFormat": "{{result}}",
-          "range": true,
+          "expr": "sum(count_over_time({application=\"api-gatekeeper\"} |= \"allowed\" | json | __error__=\"\" | allowed=`true` [$__range]))",
+          "legendFormat": "allowed",
+          "queryType": "range",
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "${DS_LOKI}"
+          },
+          "editorMode": "code",
+          "expr": "sum(count_over_time({application=\"api-gatekeeper\"} |= \"allowed\" | json | __error__=\"\" | allowed=`false` [$__range]))",
+          "legendFormat": "denied",
+          "queryType": "range",
+          "refId": "B"
         }
       ],
-      "title": "Total Requests (Allowed vs Denied)",
+      "title": "Allowed vs Denied",
+      "description": "Request counts from Loki logs for the selected time range.",
+      "transformations": [],
       "type": "piechart"
     },
     {
@@ -139,8 +183,8 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 8,
-        "x": 8,
+        "w": 18,
+        "x": 6,
         "y": 0
       },
       "id": 2,
@@ -171,74 +215,6 @@
       ],
       "title": "Request Rate Over Time",
       "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [],
-          "max": 100,
-          "min": 0,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "red",
-                "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 90
-              },
-              {
-                "color": "green",
-                "value": 95
-              }
-            ]
-          },
-          "unit": "percent"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 8,
-        "x": 16,
-        "y": 0
-      },
-      "id": 3,
-      "options": {
-        "orientation": "auto",
-        "reduceOptions": {
-          "values": false,
-          "calcs": ["lastNotNull"],
-          "fields": ""
-        },
-        "showThresholdLabels": false,
-        "showThresholdMarkers": true
-      },
-      "pluginVersion": "10.0.0",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "editorMode": "code",
-          "expr": "100 * sum(rate(auth_requests_total{job=~\"$job\",result=\"allowed\"}[5m])) / sum(rate(auth_requests_total{job=~\"$job\"}[5m]))",
-          "legendFormat": "Success Rate",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "title": "Success Rate",
-      "type": "gauge"
     },
     {
       "datasource": {
@@ -296,7 +272,7 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 12,
+        "w": 24,
         "x": 0,
         "y": 8
       },
@@ -374,8 +350,8 @@
       "gridPos": {
         "h": 8,
         "w": 12,
-        "x": 12,
-        "y": 8
+        "x": 0,
+        "y": 16
       },
       "id": 5,
       "options": {
@@ -487,7 +463,7 @@
       "gridPos": {
         "h": 8,
         "w": 12,
-        "x": 0,
+        "x": 12,
         "y": 16
       },
       "id": 6,
@@ -552,8 +528,8 @@
       "gridPos": {
         "h": 8,
         "w": 12,
-        "x": 12,
-        "y": 16
+        "x": 0,
+        "y": 24
       },
       "id": 7,
       "options": {
@@ -656,7 +632,7 @@
       "gridPos": {
         "h": 8,
         "w": 12,
-        "x": 0,
+        "x": 12,
         "y": 24
       },
       "id": 8,
@@ -747,8 +723,8 @@
       "gridPos": {
         "h": 8,
         "w": 12,
-        "x": 12,
-        "y": 24
+        "x": 0,
+        "y": 32
       },
       "id": 9,
       "options": {
@@ -835,8 +811,8 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 24,
-        "x": 0,
+        "w": 12,
+        "x": 12,
         "y": 32
       },
       "id": 10,
@@ -1150,6 +1126,24 @@
         "name": "DS_PROMETHEUS",
         "options": [],
         "query": "prometheus",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "type": "datasource"
+      },
+      {
+        "current": {
+          "selected": false,
+          "text": "Loki",
+          "value": "Loki"
+        },
+        "hide": 0,
+        "includeAll": false,
+        "label": "Loki Datasource",
+        "multi": false,
+        "name": "DS_LOKI",
+        "options": [],
+        "query": "loki",
         "refresh": 1,
         "regex": "",
         "skipUrlSync": false,
