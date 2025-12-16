@@ -50,6 +50,9 @@ def authorize():
                     request.headers.get('X-Forwarded-For', '').split(',')[0].strip() or \
                     request.remote_addr or 'unknown'
 
+        # Get user agent for logging
+        user_agent = request.headers.get('User-Agent', 'unknown')
+
         if not original_uri or not original_method:
             logger.warning("Missing X-Original-URI or X-Original-Method headers")
             return make_response('Missing required headers', 400)
@@ -115,6 +118,7 @@ def authorize():
             # Structured logging
             logger.info("Authorization result", extra={
                 'client_ip': client_ip,
+                'user_agent': user_agent,
                 'client_id': result.client_id or 'public',
                 'client_name': result.client_name,
                 'route': path,
@@ -153,6 +157,7 @@ def authorize():
             # Structured logging
             logger.warning("Authorization denied", extra={
                 'client_ip': client_ip,
+                'user_agent': user_agent,
                 'client_id': result.client_id,
                 'client_name': result.client_name,
                 'route': path,
@@ -178,8 +183,10 @@ def authorize():
         error_client_ip = request.headers.get('X-Real-IP') or \
                           request.headers.get('X-Forwarded-For', '').split(',')[0].strip() or \
                           request.remote_addr or 'unknown'
+        error_user_agent = request.headers.get('User-Agent', 'unknown')
         logger.error("Authorization error", extra={
             'client_ip': error_client_ip,
+            'user_agent': error_user_agent,
             'route': request.headers.get('X-Original-URI', 'unknown'),
             'method': request.headers.get('X-Original-Method', 'unknown'),
             'error_type': type(e).__name__,
