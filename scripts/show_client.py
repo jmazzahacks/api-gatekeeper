@@ -64,7 +64,7 @@ def show_client_details(client_id: str) -> bool:
                 route = db.load_route_by_id(perm.route_id)
                 methods_str = ", ".join([m.value for m in perm.allowed_methods])
                 if route:
-                    print(f"  {route.route_pattern:<40} [{methods_str}]")
+                    print(f"  {route.route_pattern:<40} ({route.domain}) [{methods_str}]")
                 else:
                     print(f"  {perm.route_id:<40} [{methods_str}] (route not found)")
         else:

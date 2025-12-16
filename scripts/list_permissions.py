@@ -46,7 +46,7 @@ def list_all_permissions(db):
             route = db.load_route_by_id(perm.route_id)
             if route:
                 methods_str = ", ".join([m.value for m in perm.allowed_methods])
-                print(f"  → {route.route_pattern:<35} [{route.service_name:<20}] {methods_str}")
+                print(f"  → {route.route_pattern:<35} ({route.domain:<20}) [{route.service_name:<15}] {methods_str}")
 
     if total_permissions == 0:
         print("\nNo permissions found.")
@@ -85,17 +85,17 @@ def list_permissions_by_client(db, client_id: str):
         return
 
     print(f"\nGranted Routes ({len(permissions)}):")
-    print("-" * 100)
-    print(f"{'Route Pattern':<35} {'Service':<25} {'Allowed Methods':<30} {'Permission ID'}")
-    print("-" * 100)
+    print("-" * 120)
+    print(f"{'Route Pattern':<35} {'Domain':<22} {'Service':<18} {'Allowed Methods':<25} {'Permission ID'}")
+    print("-" * 120)
 
     for perm in permissions:
         route = db.load_route_by_id(perm.route_id)
         if route:
             methods_str = ", ".join([m.value for m in perm.allowed_methods])
-            print(f"{route.route_pattern:<35} {route.service_name:<25} {methods_str:<30} {perm.permission_id}")
+            print(f"{route.route_pattern:<35} {route.domain:<22} {route.service_name:<18} {methods_str:<25} {perm.permission_id}")
 
-    print("=" * 100)
+    print("=" * 120)
 
 
 def list_permissions_by_route(db, route_id: str):
@@ -112,7 +112,8 @@ def list_permissions_by_route(db, route_id: str):
     print(f"Permissions for Route: {route.route_pattern}")
     print("=" * 100)
     print(f"Route ID: {route.route_id}")
-    print(f"Service: {route.service_name}")
+    print(f"Domain:   {route.domain}")
+    print(f"Service:  {route.service_name}")
 
     # Show route's auth requirements
     print(f"\nRoute authentication requirements:")
