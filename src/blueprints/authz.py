@@ -50,8 +50,8 @@ def authorize():
                     request.headers.get('X-Forwarded-For', '').split(',')[0].strip() or \
                     request.remote_addr or 'unknown'
 
-        # Get user agent for logging
-        user_agent = request.headers.get('User-Agent', 'unknown')
+        # Get user agent for logging (nginx forwards original via X-Original-User-Agent)
+        user_agent = request.headers.get('X-Original-User-Agent', 'unknown')
 
         if not original_uri or not original_method:
             logger.warning("Missing X-Original-URI or X-Original-Method headers")
@@ -183,7 +183,7 @@ def authorize():
         error_client_ip = request.headers.get('X-Real-IP') or \
                           request.headers.get('X-Forwarded-For', '').split(',')[0].strip() or \
                           request.remote_addr or 'unknown'
-        error_user_agent = request.headers.get('User-Agent', 'unknown')
+        error_user_agent = request.headers.get('X-Original-User-Agent', 'unknown')
         logger.error("Authorization error", extra={
             'client_ip': error_client_ip,
             'user_agent': error_user_agent,
