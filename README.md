@@ -642,7 +642,9 @@ Currently using `schema.sql` with `CREATE TABLE IF NOT EXISTS`. For production, 
 
 - [ARCHITECTURE.md](docs/ARCHITECTURE.md) - System architecture and design principles
 - [DATABASE_SETUP.md](docs/DATABASE_SETUP.md) - Detailed database setup instructions
+- [DOCKER_DEPLOYMENT.md](docs/DOCKER_DEPLOYMENT.md) - Docker deployment guide (standalone and existing stacks)
 - [ROADMAP.md](docs/ROADMAP.md) - Development roadmap with phase breakdown
+- [HOW_TO_GATEKEEPER_AUTH_NGINX.md](HOW_TO_GATEKEEPER_AUTH_NGINX.md) - Nginx auth_request integration patterns
 - [nginx/auth-example.conf](nginx/auth-example.conf) - Nginx integration example
 
 ## Contributing
