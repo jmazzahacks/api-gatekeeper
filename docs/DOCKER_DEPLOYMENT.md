@@ -2,7 +2,7 @@
 
 This guide covers deploying API Gatekeeper with Docker, from adding it to an existing stack to running a full standalone deployment with nginx.
 
-For detailed nginx auth_request patterns, see [HOW_TO_GATEKEEPER_AUTH_NGINX.md](../HOW_TO_GATEKEEPER_AUTH_NGINX.md).
+For detailed nginx auth_request patterns, see [HOW_TO_GATEKEEPER_AUTH_NGINX.md](HOW_TO_GATEKEEPER_AUTH_NGINX.md).
 
 ## Prerequisites
 
@@ -253,7 +253,7 @@ location = /auth {
 }
 ```
 
-See [HOW_TO_GATEKEEPER_AUTH_NGINX.md](../HOW_TO_GATEKEEPER_AUTH_NGINX.md) for the full auth_request pattern including protected locations and Cloudflare real IP restoration.
+See [HOW_TO_GATEKEEPER_AUTH_NGINX.md](HOW_TO_GATEKEEPER_AUTH_NGINX.md) for the full auth_request pattern including protected locations and Cloudflare real IP restoration.
 
 ### Default Server Block to Reject Direct IP Hits
 
@@ -291,7 +291,7 @@ openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
 
 ### Cloudflare Real IP Restoration
 
-If your server is behind Cloudflare, you must restore real client IPs. See the [Cloudflare IP restoration section](../HOW_TO_GATEKEEPER_AUTH_NGINX.md#1-restore-real-client-ips-from-cloudflare) in the nginx auth guide for the full `set_real_ip_from` block.
+If your server is behind Cloudflare, you must restore real client IPs. See the [Cloudflare IP restoration section](HOW_TO_GATEKEEPER_AUTH_NGINX.md#1-restore-real-client-ips-from-cloudflare) in the nginx auth guide for the full `set_real_ip_from` block.
 
 ## Route & Client Setup
 
