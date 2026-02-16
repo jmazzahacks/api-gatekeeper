@@ -83,8 +83,12 @@ db.sqlite3-journal
 instance/
 .webassets-cache
 
-# Docker build version tracking
+# Docker build (infrastructure-specific)
 VERSION
+Dockerfile
+build-publish.sh
+.dockerignore
+*.pem
 
 # Scrapy stuff:
 .scrapy

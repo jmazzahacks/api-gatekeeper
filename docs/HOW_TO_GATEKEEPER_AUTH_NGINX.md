@@ -1,6 +1,6 @@
 # How to Protect a Service with API Gatekeeper via Nginx
 
-This documents the auth pattern used on brutus.mazza.vc to protect backend services (materia, arcana) using the `api-gatekeeper` service as an auth gateway through nginx's `auth_request` module.
+This documents the auth pattern for protecting backend services using the `api-gatekeeper` service as an auth gateway through nginx's `auth_request` module.
 
 ## Prerequisites
 

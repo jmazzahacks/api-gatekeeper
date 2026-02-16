@@ -609,7 +609,6 @@ volumes:
 
 #### ✅ 3. Docker Deployment to Production Server (COMPLETED)
 
-**Deployed to**: http://brutus.mazza.vc:7843
 - ✅ Built and deployed Docker image
 - ✅ Configured environment variables via .env file
 - ✅ Container running with Gunicorn (4 workers)
@@ -713,7 +712,7 @@ volumes:
 - [x] Prometheus metrics exposed
 - [x] Structured logging throughout
 - [x] Health check endpoint implemented
-- [x] Deployed to production server (brutus.mazza.vc:7843)
+- [x] Deployed to production server
 - [x] Production testing completed
 - [x] Prometheus dashboard validated with production traffic
 - [x] Job variable selector for multi-instance support
@@ -888,7 +887,7 @@ All authorization requests logged to Loki with complete context:
 {job="api-gatekeeper"} | json | route_id="route-uuid"
 
 # Domain activity
-{job="api-gatekeeper"} | json | domain="arcana.mazza.vc"
+{job="api-gatekeeper"} | json | domain="api.example.com"
 
 # Rate limit exceeded events
 {job="api-gatekeeper"} | json | reason="rate_limit_exceeded"
@@ -962,24 +961,12 @@ DELETE /api/permissions/:id  # Revoke permission
 
 ### Production Deployments
 
-#### Test Environment
-- **URL**: http://brutus.mazza.vc:7843
-- **Routes**: 3 test routes with wildcard domains (`*`)
-- **Clients**: 2 test clients (API key and HMAC)
-- **Purpose**: Integration testing and validation
-- **Status**: ✅ Operational
-
-#### Production: Arcana Crypto API
-- **URL**: https://arcana.mazza.vc
-- **Domain**: `arcana.mazza.vc` (domain-specific routing)
-- **Routes**:
-  - `/api/health` (exact route, API key required)
-  - `/api/*` (wildcard route protecting all API endpoints)
-- **Client**: Arcana Client (API key authentication)
-- **Protection**: All `/api/*` endpoints require Bearer token
-- **Integration**: Nginx → Cloudflare → API Gatekeeper → crypto-arcana-api backend
-- **Status**: ✅ Live and operational
-- **Deployed**: November 13, 2025
+The system has been deployed and validated in production environments with:
+- Test routes with wildcard domains (`*`)
+- Domain-specific routes with API key authentication
+- Wildcard routes protecting all API endpoints
+- Full Nginx → Cloudflare → API Gatekeeper → backend integration
+- Status: ✅ Live and operational
 
 ---
 
@@ -996,7 +983,7 @@ The API Gatekeeper is now **production-ready** and **protecting live APIs**:
 - ✅ Prometheus metrics and structured logging
 - ✅ 179 comprehensive tests
 - ✅ Complete management CLI tools
-- ✅ Production deployment (arcana.mazza.vc)
+- ✅ Production deployment
 - ✅ Grafana dashboard with job selector for multi-instance monitoring
 - ✅ Database connection pool metrics tracking
 - ✅ Production traffic flowing through dashboard

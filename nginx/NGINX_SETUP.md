@@ -64,7 +64,7 @@ OR
 #### 1. Auth Service Upstream
 ```nginx
 upstream auth_service {
-    server brutus.mazza.vc:7843;
+    server api-gatekeeper:7843;
 }
 ```
 Points to your API Gatekeeper instance.
@@ -230,12 +230,12 @@ server {
 
 ### Check Auth Service Health
 ```bash
-curl http://brutus.mazza.vc:7843/health
+curl http://localhost:7843/health
 ```
 
 ### Test Auth Endpoint Directly
 ```bash
-curl -v http://brutus.mazza.vc:7843/authz \
+curl -v http://localhost:7843/authz \
   -H "X-Original-URI: /api/test" \
   -H "X-Original-Method: GET" \
   -H "X-Original-Host: api.example.com" \
