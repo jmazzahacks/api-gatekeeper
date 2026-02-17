@@ -87,6 +87,8 @@ location = /auth {
     proxy_set_header X-Original-URI $request_uri;
     proxy_set_header X-Original-Method $request_method;
     proxy_set_header X-Original-Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     proxy_set_header Authorization $http_authorization;
     proxy_set_header X-Original-Query $query_string;
     proxy_set_header X-Original-User-Agent $http_user_agent;
@@ -97,6 +99,7 @@ Key details:
 - `internal` prevents direct external access to `/auth`
 - `proxy_pass_request_body off` and `Content-Length ""` avoid sending the request body to gatekeeper (it only needs headers)
 - The `X-Original-*` headers tell gatekeeper what the original request looks like so it can make auth decisions based on URI, method, host, etc.
+- `X-Real-IP` and `X-Forwarded-For` forward the real client IP to gatekeeper for logging. Without these, gatekeeper logs the Docker proxy IP instead of the actual client.
 - `Authorization` is forwarded so gatekeeper can validate API keys / bearer tokens
 
 ### 3. Protect Your Service Location with `auth_request`
@@ -209,6 +212,8 @@ server {
         proxy_set_header X-Original-URI $request_uri;
         proxy_set_header X-Original-Method $request_method;
         proxy_set_header X-Original-Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header Authorization $http_authorization;
         proxy_set_header X-Original-Query $query_string;
         proxy_set_header X-Original-User-Agent $http_user_agent;
@@ -238,6 +243,7 @@ server {
 
 ## Common Pitfalls
 
+- **Missing `X-Real-IP` / `X-Forwarded-For` in the `/auth` location** means gatekeeper logs the Docker proxy IP (e.g., `172.18.0.4`) instead of the real client. Always include `proxy_set_header X-Real-IP $remote_addr;` and `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;` in the auth subrequest location.
 - **Missing Cloudflare real IP restoration** means `$remote_addr`, logs, and `X-Real-IP` all show Cloudflare proxy IPs instead of real clients. This must be in EVERY server block behind Cloudflare.
 - **Forgetting `internal`** on the `/auth` location exposes gatekeeper directly to the internet
 - **Forgetting `proxy_pass_request_body off`** sends request bodies to gatekeeper unnecessarily, which can cause issues with large POST requests

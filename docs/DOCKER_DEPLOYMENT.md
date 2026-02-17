@@ -247,6 +247,8 @@ location = /auth {
     proxy_set_header X-Original-URI $request_uri;
     proxy_set_header X-Original-Method $request_method;
     proxy_set_header X-Original-Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     proxy_set_header Authorization $http_authorization;
     proxy_set_header X-Original-Query $query_string;
     proxy_set_header X-Original-User-Agent $http_user_agent;
@@ -386,6 +388,21 @@ python scripts/show_client.py
 **Cause**: Without a default server block, nginx matches the first `server` block it finds for unmatched requests.
 
 **Fix**: Add a [default server block](#default-server-block-to-reject-direct-ip-hits) that returns 444.
+
+### Gatekeeper logs Docker proxy IP instead of real client IP
+
+**Symptom**: Gatekeeper logs show `172.18.0.x` (Docker bridge network IP) as `client_ip` instead of the real client IP. Often affects denied requests while allowed requests show correct IPs.
+
+**Cause**: The `/auth` internal location block is not forwarding `X-Real-IP` and `X-Forwarded-For` headers to gatekeeper. Without these, gatekeeper falls back to `request.remote_addr`, which is nginx's Docker network IP. Allowed requests may appear correct because Cloudflare adds `X-Forwarded-For` to the original request and nginx forwards original headers by default — but direct IP hits (scanners, bots) have no such header.
+
+**Fix**: Add these two lines to the `/auth` internal location block:
+
+```nginx
+proxy_set_header X-Real-IP $remote_addr;
+proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+```
+
+This ensures `$remote_addr` (which reflects the real client IP after `set_real_ip_from` processing) is always forwarded to gatekeeper.
 
 ### Container name resolution failures
 
