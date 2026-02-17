@@ -8,9 +8,6 @@ from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTEN
 import time
 from functools import wraps
 from typing import Callable
-import logging
-import os
-from pythonjsonlogger import jsonlogger
 
 
 # Prometheus Metrics
@@ -39,37 +36,6 @@ DB_CONNECTION_POOL = Gauge(
     ['state']
 )
 
-
-def setup_json_logging(app):
-    """
-    Configure JSON structured logging for the application.
-
-    Args:
-        app: Flask application instance
-    """
-    # Create JSON formatter
-    log_handler = logging.StreamHandler()
-    formatter = jsonlogger.JsonFormatter(
-        '%(asctime)s %(name)s %(levelname)s %(message)s',
-        timestamp=True
-    )
-    log_handler.setFormatter(formatter)
-
-    # Get log level from environment variable (default: INFO)
-    log_level_name = os.environ.get('LOG_LEVEL', 'INFO').upper()
-    log_level = getattr(logging, log_level_name, logging.INFO)
-
-    # Configure Flask logger
-    app.logger.handlers = []
-    app.logger.addHandler(log_handler)
-    app.logger.setLevel(log_level)
-
-    # Configure root logger
-    logging.root.handlers = []
-    logging.root.addHandler(log_handler)
-    logging.root.setLevel(log_level)
-
-    return app.logger
 
 
 def track_auth_request(func: Callable) -> Callable:
