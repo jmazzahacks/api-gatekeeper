@@ -657,7 +657,7 @@ Currently using `schema.sql` with `CREATE TABLE IF NOT EXISTS`. For production, 
 
 ## License
 
-[Your License Here]
+This project is licensed under the [O'Sassy License](https://osaasy.dev/) - see the [LICENSE](LICENSE) file for details.
 
 ## Support
 
