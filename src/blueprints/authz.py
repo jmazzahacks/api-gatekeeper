@@ -102,16 +102,20 @@ def authorize():
         # Calculate duration
         duration = time.time() - start_time
 
+        # Use matched route ID for metrics labels, or a static placeholder
+        # for unmatched routes to prevent cardinality explosion from scanner paths
+        route_label = result.matched_route_id or '__unmatched__'
+
         if result.allowed:
             # Update metrics
             AUTH_REQUESTS_TOTAL.labels(
                 result='allowed',
-                route_pattern=result.matched_route_id or path,
+                route_pattern=route_label,
                 method=original_method
             ).inc()
 
             AUTH_DURATION_SECONDS.labels(
-                route_pattern=result.matched_route_id or path,
+                route_pattern=route_label,
                 method=original_method
             ).observe(duration)
 
@@ -145,12 +149,12 @@ def authorize():
             # Update metrics
             AUTH_REQUESTS_TOTAL.labels(
                 result='denied',
-                route_pattern=result.matched_route_id or path,
+                route_pattern=route_label,
                 method=original_method
             ).inc()
 
             AUTH_DURATION_SECONDS.labels(
-                route_pattern=result.matched_route_id or path,
+                route_pattern=route_label,
                 method=original_method
             ).observe(duration)
 
