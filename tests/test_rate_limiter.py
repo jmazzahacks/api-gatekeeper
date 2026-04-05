@@ -4,7 +4,7 @@ Tests for rate limiting functionality.
 import pytest
 from unittest.mock import Mock, MagicMock, patch
 from src.rate_limiter import RedisBackend, RateLimiter
-from src.models.rate_limit import RateLimit
+from api_gatekeeper_models import RateLimit
 
 
 class TestRedisBackend:

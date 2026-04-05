@@ -3,8 +3,7 @@ Authorization engine for API Gatekeeper.
 """
 from typing import Optional, List, Dict
 from src.database.driver import AuthServiceDB
-from src.models.route import Route, HttpMethod
-from src.models.client import Client
+from api_gatekeeper_models import Route, HttpMethod, Client
 from .models import AuthResult
 from .hmac_handler import HMACHandler
 from .api_key_handler import APIKeyHandler

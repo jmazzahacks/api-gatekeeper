@@ -11,8 +11,7 @@ import sys
 from dotenv import load_dotenv
 
 from src.utils import get_db_connection
-from src.models.client_permission import ClientPermission
-from src.models.route import HttpMethod
+from api_gatekeeper_models import ClientPermission, HttpMethod
 
 
 def get_choice(prompt: str, choices: list) -> int:

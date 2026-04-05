@@ -4,8 +4,7 @@ Tests model validation, serialization, and business logic.
 """
 import pytest
 import time
-from src.models.route import Route, HttpMethod
-from src.models.method_auth import MethodAuth, AuthType
+from api_gatekeeper_models import Route, HttpMethod, MethodAuth, AuthType
 
 
 class TestMethodAuth:

@@ -13,7 +13,7 @@ from datetime import datetime
 from dotenv import load_dotenv
 
 from src.utils import get_db_connection
-from src.models.client import Client
+from api_gatekeeper_models import Client
 
 
 def format_timestamp(unix_ts: int) -> str:

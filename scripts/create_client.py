@@ -11,7 +11,7 @@ import secrets
 from dotenv import load_dotenv
 
 from src.utils import get_db_connection
-from src.models.client import Client, ClientStatus
+from api_gatekeeper_models import Client, ClientStatus
 
 
 def get_input(prompt: str, default: str = None) -> str:

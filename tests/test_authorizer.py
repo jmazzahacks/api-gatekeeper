@@ -4,10 +4,7 @@ CRITICAL: All tests use the api_auth_admin_test database via fixtures.
 """
 import pytest
 from src.auth import Authorizer, AuthResult, RequestSigner
-from src.models.route import Route, HttpMethod
-from src.models.method_auth import MethodAuth, AuthType
-from src.models.client import Client, ClientStatus
-from src.models.client_permission import ClientPermission
+from api_gatekeeper_models import Route, HttpMethod, MethodAuth, AuthType, Client, ClientStatus, ClientPermission
 
 
 class TestRouteMatching:

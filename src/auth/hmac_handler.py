@@ -9,7 +9,7 @@ from byteforge_hmac import (
 )
 
 from src.database.driver import AuthServiceDB
-from src.models.client import Client
+from api_gatekeeper_models import Client
 
 
 class DatabaseSecretProvider(SecretProvider):

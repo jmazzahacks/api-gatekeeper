@@ -10,8 +10,7 @@ import sys
 from dotenv import load_dotenv
 
 from src.utils import get_db_connection
-from src.models.route import Route, HttpMethod
-from src.models.method_auth import MethodAuth, AuthType
+from api_gatekeeper_models import Route, HttpMethod, MethodAuth, AuthType
 
 
 def get_input(prompt: str, default: str = None) -> str:

@@ -22,3 +22,6 @@ redis
 
 # Centralized logging with Loki
 mazza-base @ git+https://${CR_PAT}@github.com/mazza-vc/python-mazza-base.git@main
+
+# Shared models
+api-gatekeeper-models @ git+https://github.com/jmazzahacks/api-gatekeeper-models.git

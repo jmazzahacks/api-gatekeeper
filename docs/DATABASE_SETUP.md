@@ -136,8 +136,7 @@ route = db.load_route_by_id('some-route-id')
 matching_routes = db.find_matching_routes('/api/users/123')
 
 # Save a route
-from src.models.route import Route, HttpMethod
-from src.models.method_auth import MethodAuth, AuthType
+from api_gatekeeper_models import Route, HttpMethod, MethodAuth, AuthType
 
 route = Route.create_new(
     route_id='api-users',

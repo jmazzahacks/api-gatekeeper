@@ -9,10 +9,7 @@ import psycopg2
 from psycopg2.pool import ThreadedConnectionPool
 from psycopg2.extras import RealDictCursor
 
-from ..models.route import Route
-from ..models.client import Client
-from ..models.client_permission import ClientPermission
-from ..models.rate_limit import RateLimit
+from api_gatekeeper_models import Route, Client, ClientPermission, RateLimit
 from ..monitoring import DB_CONNECTION_POOL
 
 

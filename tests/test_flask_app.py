@@ -7,10 +7,7 @@ nginx auth_request integration.
 """
 import pytest
 from src.app import create_app
-from src.models.route import Route, HttpMethod
-from src.models.method_auth import MethodAuth, AuthType
-from src.models.client import Client, ClientStatus
-from src.models.client_permission import ClientPermission
+from api_gatekeeper_models import Route, HttpMethod, MethodAuth, AuthType, Client, ClientStatus, ClientPermission
 from src.auth import RequestSigner, HMACHandler
 
 

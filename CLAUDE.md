@@ -54,14 +54,27 @@ The `get_db_connection()` utility (`src/utils/db_connection.py`):
 
 **Never duplicate database connection logic** - always use this utility function.
 
-## Code Structure (To Be Developed)
+## Data Models
 
-The `src/` directory will contain the main application code. Expected components:
+Data models (Client, Route, ClientPermission, RateLimit, etc.) live in the external `api-gatekeeper-models` library. Import from there:
 
-- **Authentication handlers**: HMAC signature validation and API key verification
-- **User management**: Database models and operations for users, API keys, and shared secrets
-- **Authorization rules**: Endpoint-to-permission mappings (which users can access which endpoints/methods)
-- **Nginx integration**: Request validation interface compatible with `ngx_http_auth_request_module`
+```python
+from api_gatekeeper_models import Client, Route, HttpMethod, MethodAuth, AuthType
+```
+
+Do NOT create model classes in `src/models/` — that directory has been removed in favor of the shared library.
+
+## Code Structure
+
+The `src/` directory contains the main application code:
+
+- **`src/auth/`**: Authentication handlers (HMAC, API key) and authorization engine
+- **`src/blueprints/`**: Flask blueprints (authz, health, metrics)
+- **`src/database/`**: Database driver and schema
+- **`src/utils/`**: Utility functions (db connection helper)
+- **`src/app.py`**: Flask application factory
+- **`src/monitoring.py`**: Prometheus metrics
+- **`src/rate_limiter.py`**: Redis-backed rate limiting
 
 ## Testing
 

@@ -6,7 +6,7 @@ Handles nginx auth_request integration for API authorization.
 import time
 import logging
 from flask import Blueprint, request, make_response, current_app
-from src.models.route import HttpMethod
+from api_gatekeeper_models import HttpMethod
 from src.monitoring import (
     AUTH_REQUESTS_TOTAL,
     AUTH_DURATION_SECONDS,

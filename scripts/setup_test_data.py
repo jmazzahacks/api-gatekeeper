@@ -10,10 +10,7 @@ Creates:
 - Appropriate permissions
 """
 from src.utils import get_db_connection
-from src.models.route import Route, HttpMethod
-from src.models.method_auth import MethodAuth, AuthType
-from src.models.client import Client, ClientStatus
-from src.models.client_permission import ClientPermission
+from api_gatekeeper_models import Route, HttpMethod, MethodAuth, AuthType, Client, ClientStatus, ClientPermission
 
 def main():
     print("=" * 60)

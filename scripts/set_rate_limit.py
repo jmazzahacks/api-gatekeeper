@@ -8,7 +8,7 @@ Usage:
 
 from dotenv import load_dotenv
 from src.utils import get_db_connection
-from src.models.rate_limit import RateLimit
+from api_gatekeeper_models import RateLimit
 
 
 def main():

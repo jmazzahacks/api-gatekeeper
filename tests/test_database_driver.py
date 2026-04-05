@@ -4,8 +4,7 @@ CRITICAL: All tests use the api_auth_admin_test database via fixtures.
 """
 import pytest
 import time
-from src.models.route import Route, HttpMethod
-from src.models.method_auth import MethodAuth, AuthType
+from api_gatekeeper_models import Route, HttpMethod, MethodAuth, AuthType
 
 
 class TestDatabaseConnection:

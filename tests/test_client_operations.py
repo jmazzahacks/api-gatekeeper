@@ -4,10 +4,7 @@ CRITICAL: All tests use the api_auth_admin_test database via fixtures.
 """
 import pytest
 import time
-from src.models.client import Client, ClientStatus
-from src.models.client_permission import ClientPermission
-from src.models.route import Route, HttpMethod
-from src.models.method_auth import MethodAuth, AuthType
+from api_gatekeeper_models import Client, ClientStatus, ClientPermission, Route, HttpMethod, MethodAuth, AuthType
 
 
 class TestClientCRUD:

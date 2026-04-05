@@ -5,7 +5,7 @@ CRITICAL: All tests use the api_auth_admin_test database via fixtures.
 import pytest
 import time
 from src.auth import APIKeyHandler, HMACHandler, DatabaseSecretProvider, RequestSigner
-from src.models.client import Client, ClientStatus
+from api_gatekeeper_models import Client, ClientStatus
 
 
 class TestAPIKeyHandler:
