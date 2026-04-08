@@ -18,7 +18,8 @@ A flexible authentication and authorization service designed to work with nginx'
 - **Complete Management Scripts**: Interactive CLI tools for all operations
 - **Audit Logging**: Comprehensive structured logging via Loki with full request context
 - **Prometheus Metrics**: Built-in metrics endpoint for monitoring and alerting
-- **Comprehensive Testing**: 194 tests with 100% pass rate
+- **Trusted Forwarder Support**: Correct client IP resolution when auth subrequests route through Cloudflare
+- **Comprehensive Testing**: 215 tests with 100% pass rate
 
 ## Architecture
 
@@ -44,6 +45,48 @@ Routes can be configured with domain-specific access rules, enabling multi-domai
 **Priority**: When multiple routes match, exact domain matches take priority over wildcard subdomains, which take priority over any-domain wildcards.
 
 See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for detailed architecture documentation.
+
+### Trusted Forwarder IP Resolution
+
+When upstream servers make auth subrequests to the gatekeeper through Cloudflare, Cloudflare replaces `CF-Connecting-IP` with the upstream server's IP — not the original client's IP. This means the gatekeeper logs and rate-limits against the wrong IP.
+
+**The solution**: Upstream servers forward the real client IP in an `X-Original-Client-IP` header, and the gatekeeper trusts it only from known server IPs.
+
+**How it works:**
+
+1. Client (`198.51.100.42`) → Cloudflare → Upstream nginx (e.g., your app server at `203.0.113.10`)
+2. Upstream nginx makes an auth subrequest back through Cloudflare to the gatekeeper
+3. Cloudflare sets `CF-Connecting-IP` to `203.0.113.10` (the upstream server, not the client)
+4. But the upstream nginx also sets `X-Original-Client-IP: 198.51.100.42` (the real client)
+5. Gatekeeper sees the caller is `203.0.113.10`, which is in `TRUSTED_FORWARDER_IPS`
+6. Gatekeeper uses `X-Original-Client-IP` (`198.51.100.42`) as the real client IP
+
+**Gatekeeper configuration** — add the upstream server IPs to `TRUSTED_FORWARDER_IPS`:
+
+```bash
+TRUSTED_FORWARDER_IPS=203.0.113.10,203.0.113.20
+```
+
+**Upstream nginx configuration** — add this to the `auth_request` location block:
+
+```nginx
+location = /auth {
+    internal;
+    proxy_pass https://gatekeeper.example.com/authz;
+
+    # Forward the real client IP (from Cloudflare's CF-Connecting-IP on this server)
+    proxy_set_header X-Original-Client-IP $http_cf_connecting_ip;
+
+    # Standard headers
+    proxy_set_header X-Original-URI $request_uri;
+    proxy_set_header X-Original-Method $request_method;
+    proxy_set_header X-Original-Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+}
+```
+
+**Security**: If the caller IP is not in `TRUSTED_FORWARDER_IPS`, the `X-Original-Client-IP` header is ignored entirely — preventing spoofing by arbitrary clients.
 
 ## Quick Start
 
@@ -412,7 +455,7 @@ python -m pytest -v
 **Test database:**
 - All tests use `api_auth_admin_test` database
 - Automatic cleanup between tests
-- **194 tests** covering:
+- **215 tests** covering:
   - Route models with domain matching (28 tests)
   - Database driver operations (22 tests)
   - Client operations and permissions (30 tests)
@@ -421,6 +464,7 @@ python -m pytest -v
   - Flask HTTP endpoints (23 tests)
   - Rate limiting (17 tests)
   - Nonce storage (13 tests)
+  - IP resolution and trusted forwarders (21 tests)
 
 ## Project Structure
 
@@ -430,12 +474,6 @@ api-gatekeeper/
 │   ├── app.py               # Flask HTTP application
 │   ├── monitoring.py        # Prometheus metrics
 │   ├── rate_limiter.py      # Redis-backed rate limiting
-│   ├── models/              # Data models
-│   │   ├── route.py         # Route with pattern matching
-│   │   ├── method_auth.py   # Auth requirements per HTTP method
-│   │   ├── client.py        # Client with credentials
-│   │   ├── client_permission.py  # Permission linking
-│   │   └── rate_limit.py    # Rate limit configuration
 │   ├── auth/                # Authorization & authentication
 │   │   ├── models.py        # AuthResult model
 │   │   ├── authorizer.py    # Authorization engine
@@ -451,7 +489,8 @@ api-gatekeeper/
 │   │   ├── schema.sql       # PostgreSQL schema
 │   │   └── driver.py        # CRUD operations with connection pooling
 │   └── utils/               # Utilities
-│       └── db_connection.py # Database connection helper
+│       ├── db_connection.py # Database connection helper
+│       └── ip_resolver.py   # Client IP resolution with trusted forwarder support
 ├── docs/                    # Documentation
 │   ├── ARCHITECTURE.md      # System architecture
 │   ├── DATABASE_SETUP.md    # Database setup guide
@@ -471,7 +510,7 @@ api-gatekeeper/
 │   ├── set_rate_limit.py    # Set client rate limits
 │   ├── list_rate_limits.py  # List all rate limits
 │   └── setup_test_data.py   # Create test data
-├── tests/                   # Test suite (194 tests)
+├── tests/                   # Test suite (215 tests)
 │   ├── conftest.py          # Test fixtures
 │   ├── test_database_driver.py      # Database CRUD tests
 │   ├── test_client_operations.py    # Client/permission tests
@@ -480,7 +519,8 @@ api-gatekeeper/
 │   ├── test_auth_handlers.py        # Authentication handler tests
 │   ├── test_flask_app.py            # Flask endpoint tests
 │   ├── test_rate_limiter.py         # Rate limiting tests
-│   └── test_nonce_storage.py        # Nonce storage tests
+│   ├── test_nonce_storage.py        # Nonce storage tests
+│   └── test_ip_resolver.py         # IP resolution and trusted forwarder tests
 └── dev_scripts/             # Development utilities
     └── setup_database.py    # Database initialization
 ```
@@ -515,6 +555,7 @@ No code changes or service restarts required.
 - `REDIS_PORT`: Redis port (default: `6379`)
 - `REDIS_PASSWORD`: Redis password (optional)
 - `REDIS_DB`: Redis database number (default: `0`)
+- `TRUSTED_FORWARDER_IPS`: Comma-separated list of upstream server IPs trusted to forward `X-Original-Client-IP` (default: none)
 
 ## Security Considerations
 
@@ -549,7 +590,7 @@ No code changes or service restarts required.
 
 ### Adding New Features
 
-1. Models go in `src/models/`
+1. Data models go in the `api-gatekeeper-models` library (separate repo)
 2. Database operations in `src/database/driver.py`
 3. Update `src/database/schema.sql` for schema changes
 4. Add tests in `tests/`
@@ -667,4 +708,4 @@ For issues and questions:
 
 ---
 
-**Status**: Phases 1-7 complete. Production-ready with multi-domain routing, rate limiting, HMAC replay protection, comprehensive audit logging, and Prometheus metrics. 194 tests passing. Ready for Phase 8 enhancements.
+**Status**: Phases 1-7 complete. Production-ready with multi-domain routing, rate limiting, HMAC replay protection, trusted forwarder IP resolution, comprehensive audit logging, and Prometheus metrics. 215 tests passing. Ready for Phase 8 enhancements.

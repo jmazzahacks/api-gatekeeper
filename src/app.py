@@ -27,7 +27,7 @@ configure_logging(
 
 import redis
 from src.auth import Authorizer, HMACHandler, RedisNonceStorage
-from src.utils import get_db_connection
+from src.utils import get_db_connection, parse_trusted_forwarder_ips
 from src.database.driver import AuthServiceDB
 from src.blueprints import authz_bp, health_bp, metrics_bp
 from src.rate_limiter import RateLimiter, RedisBackend
@@ -158,11 +158,21 @@ def create_app(
     # Create authorizer with all components
     authorizer = Authorizer(db, hmac_handler=hmac_handler, rate_limiter=rate_limiter)
 
+    # Parse trusted forwarder IPs for client IP resolution
+    trusted_ips = parse_trusted_forwarder_ips(
+        os.environ.get('TRUSTED_FORWARDER_IPS')
+    )
+    if trusted_ips:
+        logger.info("Trusted forwarder IPs configured", extra={
+            'trusted_ips': sorted(trusted_ips)
+        })
+
     # Store in app config for access in route handlers
     app.config['DB'] = db
     app.config['AUTHORIZER'] = authorizer
     app.config['RATE_LIMITER'] = rate_limiter
     app.config['REDIS_CLIENT'] = redis_client
+    app.config['TRUSTED_FORWARDER_IPS'] = trusted_ips
 
     # Register blueprints
     app.register_blueprint(authz_bp)

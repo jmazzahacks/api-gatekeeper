@@ -7,6 +7,7 @@ import time
 import logging
 from flask import Blueprint, request, make_response, current_app
 from api_gatekeeper_models import HttpMethod
+from src.utils import resolve_client_ip
 from src.monitoring import (
     AUTH_REQUESTS_TOTAL,
     AUTH_DURATION_SECONDS,
@@ -45,10 +46,10 @@ def authorize():
         original_method = request.headers.get('X-Original-Method')
         original_host = request.headers.get('X-Original-Host', '')
 
-        # Get client IP address (nginx forwards via X-Real-IP or X-Forwarded-For)
-        client_ip = request.headers.get('X-Real-IP') or \
-                    request.headers.get('X-Forwarded-For', '').split(',')[0].strip() or \
-                    request.remote_addr or 'unknown'
+        # Resolve client IP, accounting for trusted forwarders (e.g., upstream
+        # servers whose auth subrequests route through Cloudflare)
+        trusted_ips = current_app.config.get('TRUSTED_FORWARDER_IPS')
+        client_ip = resolve_client_ip(request, trusted_ips)
 
         # Get user agent for logging (nginx forwards original via X-Original-User-Agent)
         user_agent = request.headers.get('X-Original-User-Agent', 'unknown')
@@ -184,9 +185,8 @@ def authorize():
         AUTH_ERRORS_TOTAL.labels(error_type=type(e).__name__).inc()
 
         # Structured error logging
-        error_client_ip = request.headers.get('X-Real-IP') or \
-                          request.headers.get('X-Forwarded-For', '').split(',')[0].strip() or \
-                          request.remote_addr or 'unknown'
+        error_trusted_ips = current_app.config.get('TRUSTED_FORWARDER_IPS')
+        error_client_ip = resolve_client_ip(request, error_trusted_ips)
         error_user_agent = request.headers.get('X-Original-User-Agent', 'unknown')
         logger.error("Authorization error", extra={
             'client_ip': error_client_ip,
