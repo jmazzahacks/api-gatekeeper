@@ -9,7 +9,7 @@ import psycopg2
 from psycopg2.pool import ThreadedConnectionPool
 from psycopg2.extras import RealDictCursor
 
-from api_gatekeeper_models import Route, Client, ClientPermission, RateLimit
+from api_gatekeeper_models import Route, Client, ClientPermission, RateLimit, ConsoleAdmin
 from ..monitoring import DB_CONNECTION_POOL
 
 
@@ -659,6 +659,71 @@ class AuthServiceDB:
                 (client_id,)
             )
             return cursor.rowcount > 0
+
+    def get_admin_by_aegis_id(self, aegis_user_id: int) -> Optional[ConsoleAdmin]:
+        """
+        Look up a console admin by their Aegis user ID.
+
+        Args:
+            aegis_user_id: Aegis-side user identifier
+
+        Returns:
+            ConsoleAdmin if found, None otherwise
+        """
+        with self.get_cursor(commit=False, cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                "SELECT * FROM console_admins WHERE aegis_user_id = %s",
+                (aegis_user_id,)
+            )
+            result = cursor.fetchone()
+            if not result:
+                return None
+            return ConsoleAdmin.from_dict(dict(result))
+
+    def create_admin(self, admin: ConsoleAdmin) -> Optional[ConsoleAdmin]:
+        """
+        Create a console admin, idempotent on aegis_user_id.
+
+        Uses INSERT ... ON CONFLICT DO NOTHING so concurrent webhook deliveries
+        for the same Aegis user cannot trip a unique constraint. If the
+        aegis_user_id already exists, the existing record is returned.
+
+        Args:
+            admin: ConsoleAdmin to persist (admin_id auto-generated if None)
+
+        Returns:
+            The created or pre-existing ConsoleAdmin, or None if the INSERT was
+            rejected by the email unique constraint (which indicates the email
+            is already associated with a different aegis_user_id — a data
+            anomaly the caller should surface).
+        """
+        with self.get_cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                """
+                INSERT INTO console_admins (aegis_user_id, email, created_at, updated_at)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT DO NOTHING
+                RETURNING *
+                """,
+                (admin.aegis_user_id, admin.email, admin.created_at, admin.updated_at)
+            )
+            result = cursor.fetchone()
+            if result:
+                return ConsoleAdmin.from_dict(dict(result))
+
+            # Conflict: re-read by aegis_user_id. If a record is returned, this
+            # was a concurrent/duplicate delivery for the same Aegis user --
+            # return it so the caller can respond idempotently. If nothing is
+            # returned, the conflict was on the email constraint with a
+            # different aegis_user_id (data anomaly) and we surface None.
+            cursor.execute(
+                "SELECT * FROM console_admins WHERE aegis_user_id = %s",
+                (admin.aegis_user_id,)
+            )
+            existing = cursor.fetchone()
+            if existing:
+                return ConsoleAdmin.from_dict(dict(existing))
+            return None
 
     def close(self) -> None:
         """Close all connections in the pool."""

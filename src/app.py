@@ -27,9 +27,9 @@ configure_logging(
 
 import redis
 from src.auth import Authorizer, HMACHandler, RedisNonceStorage
-from src.utils import get_db_connection, parse_trusted_forwarder_ips
+from src.utils import get_db_connection, parse_trusted_forwarder_ips, parse_admin_allowlist
 from src.database.driver import AuthServiceDB
-from src.blueprints import authz_bp, health_bp, metrics_bp
+from src.blueprints import authz_bp, health_bp, metrics_bp, aegis_webhook_bp
 from src.rate_limiter import RateLimiter, RedisBackend
 
 logger = logging.getLogger(__name__)
@@ -167,17 +167,37 @@ def create_app(
             'trusted_ips': sorted(trusted_ips)
         })
 
+    # Aegis webhook configuration
+    webhook_secret = os.environ.get('AEGIS_WEBHOOK_SECRET')
+    admin_allowlist = parse_admin_allowlist(os.environ.get('AEGIS_ADMIN_EMAILS'))
+
+    if not webhook_secret:
+        logger.warning(
+            "AEGIS_WEBHOOK_SECRET not set; Aegis webhook endpoint will reject all deliveries"
+        )
+    if not admin_allowlist:
+        logger.warning(
+            "AEGIS_ADMIN_EMAILS not set; no users will be provisioned as console admins"
+        )
+    else:
+        logger.info("Admin provisioning allowlist configured", extra={
+            'allowlist_size': len(admin_allowlist),
+        })
+
     # Store in app config for access in route handlers
     app.config['DB'] = db
     app.config['AUTHORIZER'] = authorizer
     app.config['RATE_LIMITER'] = rate_limiter
     app.config['REDIS_CLIENT'] = redis_client
     app.config['TRUSTED_FORWARDER_IPS'] = trusted_ips
+    app.config['AEGIS_WEBHOOK_SECRET'] = webhook_secret
+    app.config['AEGIS_ADMIN_ALLOWLIST'] = admin_allowlist
 
     # Register blueprints
     app.register_blueprint(authz_bp)
     app.register_blueprint(health_bp)
     app.register_blueprint(metrics_bp)
+    app.register_blueprint(aegis_webhook_bp)
 
     return app
 

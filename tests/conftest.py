@@ -78,6 +78,7 @@ def db(test_db_config, ensure_test_db_exists):
         cursor.execute("DELETE FROM client_permissions")
         cursor.execute("DELETE FROM clients")
         cursor.execute("DELETE FROM routes")
+        cursor.execute("DELETE FROM console_admins")
 
     database.close()
 
@@ -92,4 +93,5 @@ def clean_db(db):
         cursor.execute("DELETE FROM client_permissions")
         cursor.execute("DELETE FROM clients")
         cursor.execute("DELETE FROM routes")
+        cursor.execute("DELETE FROM console_admins")
     return db

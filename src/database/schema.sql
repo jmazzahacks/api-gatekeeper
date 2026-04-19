@@ -135,6 +135,35 @@ COMMENT ON COLUMN client_permissions.route_id IS 'ID of the route this permissio
 COMMENT ON COLUMN client_permissions.allowed_methods IS 'Array of HTTP methods the client can use (e.g., {GET, POST})';
 COMMENT ON COLUMN client_permissions.created_at IS 'Unix timestamp (seconds since epoch) when permission was created';
 
+-- Console Admins table: Human users authorized to administer the gatekeeper via the console
+-- Provisioned from Aegis user.verified webhook events; distinct from `clients` (API credentials).
+CREATE TABLE IF NOT EXISTS console_admins (
+    admin_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    aegis_user_id BIGINT NOT NULL,
+    email TEXT NOT NULL,
+    created_at BIGINT NOT NULL DEFAULT extract(epoch from now())::bigint,
+    updated_at BIGINT NOT NULL DEFAULT extract(epoch from now())::bigint,
+
+    -- Constraints
+    CONSTRAINT admin_aegis_user_id_unique UNIQUE (aegis_user_id),
+    CONSTRAINT admin_email_unique UNIQUE (email),
+    CONSTRAINT admin_email_format CHECK (email ~ '^[^@]+@[^@]+\.[^@]+$')
+);
+
+-- Index for email lookups during provisioning
+CREATE INDEX IF NOT EXISTS idx_console_admins_email ON console_admins(email);
+
+-- Index for Aegis ID lookups during provisioning
+CREATE INDEX IF NOT EXISTS idx_console_admins_aegis_id ON console_admins(aegis_user_id);
+
+-- Comments for documentation
+COMMENT ON TABLE console_admins IS 'Human administrators provisioned from Aegis user.verified webhooks';
+COMMENT ON COLUMN console_admins.admin_id IS 'Local unique identifier for the console admin';
+COMMENT ON COLUMN console_admins.aegis_user_id IS 'Aegis user_id linking this admin to their Aegis identity';
+COMMENT ON COLUMN console_admins.email IS 'Admin email address (unique)';
+COMMENT ON COLUMN console_admins.created_at IS 'Unix timestamp (seconds since epoch) when admin was provisioned';
+COMMENT ON COLUMN console_admins.updated_at IS 'Unix timestamp (seconds since epoch) when admin record was last updated';
+
 -- Rate Limits table: Per-client request rate limits
 CREATE TABLE IF NOT EXISTS rate_limits (
     client_id UUID PRIMARY KEY REFERENCES clients(client_id) ON DELETE CASCADE,
