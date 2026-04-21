@@ -10,20 +10,11 @@ from typing import Optional
 from flask import Flask
 from dotenv import load_dotenv
 
-# Load environment variables from .env file FIRST
+# Load environment variables from .env file FIRST, so configure_logging() can
+# read LOKI_* vars when create_app() runs.
 load_dotenv()
 
-# Configure Loki logging with mazza-base
-# Must be done before any other imports that might log
-from mazza_base import configure_logging
-
-debug_mode = os.environ.get('DEBUG_LOCAL', 'true').lower() == 'true'
-log_level = os.environ.get('LOG_LEVEL', 'INFO')
-configure_logging(
-    application_tag='api-gatekeeper',
-    debug_local=debug_mode,
-    local_level=log_level
-)
+from byteforge_loki_logging import configure_logging
 
 import redis
 from src.auth import Authorizer, HMACHandler, RedisNonceStorage, AegisAuthenticator
@@ -36,6 +27,39 @@ logger = logging.getLogger(__name__)
 
 # Sentinel value to distinguish "not provided" from "explicitly None"
 _NOT_PROVIDED = object()
+
+
+def _configure_logging_and_loggers(app: Flask) -> None:
+    """
+    Initialize byteforge-loki-logging and force Flask / werkzeug / gunicorn
+    loggers to propagate to the root logger.
+
+    Must run inside create_app() (not at module level) so SSL state is created
+    post-fork in the gunicorn worker process. Also must run after `Flask(__name__)`
+    because Flask sets up app.logger during construction and would override an
+    earlier propagate flip.
+    """
+    debug_mode = os.environ.get('DEBUG_LOCAL', 'true').lower() == 'true'
+    log_level = os.environ.get('LOG_LEVEL', 'INFO')
+    configure_logging(
+        application_tag='api-gatekeeper',
+        debug_local=debug_mode,
+        local_level=log_level,
+    )
+
+    # Flask's default app.logger has its own StreamHandler with propagate=False.
+    # Clear it so that tracebacks from route handlers reach the root logger
+    # (and therefore Loki) instead of dead-ending on stdout.
+    app.logger.handlers.clear()
+    app.logger.propagate = True
+    app.logger.setLevel(logging.DEBUG)
+
+    # Same treatment for gunicorn + werkzeug loggers — they also create their
+    # own StreamHandler with propagate=False and would bypass Loki otherwise.
+    for name in ('werkzeug', 'gunicorn', 'gunicorn.error', 'gunicorn.access'):
+        dep_logger = logging.getLogger(name)
+        dep_logger.handlers.clear()
+        dep_logger.propagate = True
 
 
 def _create_redis_client():
@@ -139,6 +163,11 @@ def create_app(
     """
     app = Flask(__name__)
 
+    # Wire up Loki logging first — before any helper that might log — so the
+    # worker process has its own SSL-capable Loki handler and so Flask's
+    # auto-installed app.logger handlers don't swallow route-handler tracebacks.
+    _configure_logging_and_loggers(app)
+
     # Initialize database connection
     if db is None:
         db = get_db_connection(verbose=False)
@@ -223,7 +252,8 @@ def create_app(
     return app
 
 
-# Create default app instance for direct execution
+# Create default app instance for direct execution. This runs at import time;
+# under gunicorn (no --preload) that's inside the worker process, post-fork.
 app = create_app()
 
 

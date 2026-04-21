@@ -115,7 +115,7 @@ pip install -r dev-requirements.txt
 pip install -e .
 
 # Set up environment variables
-cp dot.env.example .env
+cp env.example .env
 # Edit .env with your PostgreSQL credentials
 ```
 
