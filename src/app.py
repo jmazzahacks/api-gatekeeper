@@ -26,7 +26,7 @@ configure_logging(
 )
 
 import redis
-from src.auth import Authorizer, HMACHandler, RedisNonceStorage
+from src.auth import Authorizer, HMACHandler, RedisNonceStorage, AegisAuthenticator
 from src.utils import get_db_connection, parse_trusted_forwarder_ips, parse_admin_allowlist
 from src.database.driver import AuthServiceDB
 from src.blueprints import authz_bp, health_bp, metrics_bp, aegis_webhook_bp
@@ -184,6 +184,25 @@ def create_app(
             'allowlist_size': len(admin_allowlist),
         })
 
+    # Aegis bearer-token authentication for the admin console
+    aegis_api_url = os.environ.get('AEGIS_API_URL')
+    aegis_cache_ttl = int(os.environ.get('AEGIS_AUTH_CACHE_TTL_SECONDS', '60'))
+    aegis_authenticator: Optional[AegisAuthenticator] = None
+    if aegis_api_url:
+        aegis_authenticator = AegisAuthenticator(
+            aegis_api_url=aegis_api_url,
+            db=db,
+            cache_ttl_seconds=aegis_cache_ttl,
+        )
+        logger.info("Aegis authenticator configured", extra={
+            'aegis_api_url': aegis_api_url,
+            'cache_ttl_seconds': aegis_cache_ttl,
+        })
+    else:
+        logger.warning(
+            "AEGIS_API_URL not set; admin endpoints guarded by @require_console_admin will return 503"
+        )
+
     # Store in app config for access in route handlers
     app.config['DB'] = db
     app.config['AUTHORIZER'] = authorizer
@@ -192,6 +211,7 @@ def create_app(
     app.config['TRUSTED_FORWARDER_IPS'] = trusted_ips
     app.config['AEGIS_WEBHOOK_SECRET'] = webhook_secret
     app.config['AEGIS_ADMIN_ALLOWLIST'] = admin_allowlist
+    app.config['AEGIS_AUTHENTICATOR'] = aegis_authenticator
 
     # Register blueprints
     app.register_blueprint(authz_bp)

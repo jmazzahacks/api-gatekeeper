@@ -7,6 +7,8 @@ from .hmac_handler import HMACHandler, DatabaseSecretProvider
 from .api_key_handler import APIKeyHandler
 from .request_signer import RequestSigner
 from .nonce_storage import RedisNonceStorage
+from .aegis_authenticator import AegisAuthenticator
+from .console_admin_decorator import require_console_admin
 
 __all__ = [
     'AuthResult',
@@ -16,4 +18,6 @@ __all__ = [
     'APIKeyHandler',
     'RequestSigner',
     'RedisNonceStorage',
+    'AegisAuthenticator',
+    'require_console_admin',
 ]
