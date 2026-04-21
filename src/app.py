@@ -29,7 +29,7 @@ import redis
 from src.auth import Authorizer, HMACHandler, RedisNonceStorage, AegisAuthenticator
 from src.utils import get_db_connection, parse_trusted_forwarder_ips, parse_admin_allowlist
 from src.database.driver import AuthServiceDB
-from src.blueprints import authz_bp, health_bp, metrics_bp, aegis_webhook_bp
+from src.blueprints import authz_bp, health_bp, metrics_bp, aegis_webhook_bp, admin_bp
 from src.rate_limiter import RateLimiter, RedisBackend
 
 logger = logging.getLogger(__name__)
@@ -218,6 +218,7 @@ def create_app(
     app.register_blueprint(health_bp)
     app.register_blueprint(metrics_bp)
     app.register_blueprint(aegis_webhook_bp)
+    app.register_blueprint(admin_bp)
 
     return app
 
