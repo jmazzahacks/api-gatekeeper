@@ -20,7 +20,7 @@ import redis
 from src.auth import Authorizer, HMACHandler, RedisNonceStorage, AegisAuthenticator
 from src.utils import get_db_connection, parse_trusted_forwarder_ips, parse_admin_allowlist
 from src.database.driver import AuthServiceDB
-from src.blueprints import authz_bp, health_bp, metrics_bp, aegis_webhook_bp, admin_bp
+from src.blueprints import authz_bp, health_bp, metrics_bp, aegis_webhook_bp, admin_bp, auth_bp
 from src.rate_limiter import RateLimiter, RedisBackend
 
 logger = logging.getLogger(__name__)
@@ -242,12 +242,30 @@ def create_app(
     app.config['AEGIS_ADMIN_ALLOWLIST'] = admin_allowlist
     app.config['AEGIS_AUTHENTICATOR'] = aegis_authenticator
 
+    # Aegis public-auth proxy (login, register, verify-email, password reset).
+    # Requires both AEGIS_SITE_ID and AEGIS_TENANT_API_KEY plus AEGIS_API_URL.
+    # If any are missing, the /api/auth/* endpoints will 500 on first call —
+    # warn at startup so deployment misconfigurations are obvious.
+    aegis_site_id = os.environ.get('AEGIS_SITE_ID')
+    aegis_tenant_api_key = os.environ.get('AEGIS_TENANT_API_KEY')
+    if not aegis_api_url or not aegis_site_id or not aegis_tenant_api_key:
+        missing = [name for name, val in (
+            ('AEGIS_API_URL', aegis_api_url),
+            ('AEGIS_SITE_ID', aegis_site_id),
+            ('AEGIS_TENANT_API_KEY', aegis_tenant_api_key),
+        ) if not val]
+        logger.warning(
+            "Aegis auth proxy not fully configured; /api/auth/* endpoints will fail",
+            extra={'missing_env': missing},
+        )
+
     # Register blueprints
     app.register_blueprint(authz_bp)
     app.register_blueprint(health_bp)
     app.register_blueprint(metrics_bp)
     app.register_blueprint(aegis_webhook_bp)
     app.register_blueprint(admin_bp)
+    app.register_blueprint(auth_bp)
 
     return app
 
