@@ -438,6 +438,21 @@ class AuthServiceDB:
                 return None
             return ClientPermission.from_dict(dict(result))
 
+    def load_all_permissions(self) -> List[ClientPermission]:
+        """
+        Load all client permissions from the database.
+
+        Returns:
+            List of all ClientPermission objects, ordered by client_id then route_id
+            for stable display.
+        """
+        with self.get_cursor(commit=False, cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                "SELECT * FROM client_permissions ORDER BY client_id, route_id"
+            )
+            results = cursor.fetchall()
+            return [ClientPermission.from_dict(dict(row)) for row in results]
+
     def load_permissions_by_client(self, client_id: str) -> List[ClientPermission]:
         """
         Load all permissions for a specific client.
