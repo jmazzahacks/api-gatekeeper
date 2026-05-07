@@ -22,16 +22,32 @@ from byteforge_aegis_client import AegisClient, AegisClientConfig
 _tenant_client: Optional[AegisClient] = None
 
 
+def _required_env(name: str) -> str:
+    value = os.environ.get(name, '').strip()
+    if not value:
+        raise RuntimeError(
+            f"{name} is not configured (env var is missing or empty); "
+            f"the Aegis auth proxy cannot serve /api/auth/* requests"
+        )
+    return value
+
+
 def aegis_api_url() -> str:
-    return os.environ['AEGIS_API_URL']
+    return _required_env('AEGIS_API_URL')
 
 
 def aegis_site_id() -> int:
-    return int(os.environ['AEGIS_SITE_ID'])
+    raw = _required_env('AEGIS_SITE_ID')
+    try:
+        return int(raw)
+    except ValueError:
+        raise RuntimeError(
+            f"AEGIS_SITE_ID must be an integer, got {raw!r}"
+        )
 
 
 def aegis_tenant_api_key() -> str:
-    return os.environ['AEGIS_TENANT_API_KEY']
+    return _required_env('AEGIS_TENANT_API_KEY')
 
 
 def aegis_tenant_client() -> AegisClient:
