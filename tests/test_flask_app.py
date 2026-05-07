@@ -23,6 +23,17 @@ def client(clean_db):
         yield client
 
 
+@pytest.fixture
+def cors_client(clean_db):
+    """Flask test client with a CORS allowlist configured."""
+    hmac_handler = HMACHandler(clean_db, nonce_storage={})
+    app = create_app(db=clean_db, redis_client=None, hmac_handler=hmac_handler, rate_limiter=None)
+    app.config['TESTING'] = True
+    app.config['CORS_ALLOWED_ORIGINS'] = frozenset({'https://allowed.example.com'})
+    with app.test_client() as client:
+        yield client
+
+
 class TestHealthEndpoint:
     """Test /health endpoint."""
 
@@ -559,6 +570,183 @@ class TestAuthzEndpointEdgeCases:
 
         assert response.status_code == 403
         assert b'invalid_credentials' in response.data
+
+
+class TestAuthzEndpointCorsPreflight:
+    """Test /authz endpoint OPTIONS preflight short-circuit."""
+
+    def _make_route(self, clean_db, pattern='/api/cors-test'):
+        route = Route.create_new(
+            route_pattern=pattern,
+            domain='*',
+            service_name='test-service',
+            methods={
+                HttpMethod.POST: MethodAuth(auth_required=True, auth_type=AuthType.API_KEY),
+                HttpMethod.GET: MethodAuth(auth_required=False),
+            },
+        )
+        clean_db.save_route(route)
+        return route
+
+    def test_preflight_allowed_origin_returns_cors_headers(self, cors_client, clean_db):
+        self._make_route(clean_db)
+        response = cors_client.get(
+            '/authz',
+            headers={
+                'X-Original-URI': '/api/cors-test',
+                'X-Original-Method': 'OPTIONS',
+                'X-Original-Origin': 'https://allowed.example.com',
+                'Access-Control-Request-Method': 'POST',
+                'Access-Control-Request-Headers': 'Content-Type, Authorization',
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.headers['Access-Control-Allow-Origin'] == 'https://allowed.example.com'
+        # Allow-Methods reflects the route's configured methods + OPTIONS
+        allow_methods = {m.strip() for m in response.headers['Access-Control-Allow-Methods'].split(',')}
+        assert allow_methods == {'GET', 'POST', 'OPTIONS'}
+        assert response.headers['Access-Control-Allow-Headers'] == 'Content-Type, Authorization'
+        assert response.headers['Access-Control-Max-Age'] == '86400'
+        assert response.headers['Vary'] == 'Origin'
+
+    def test_preflight_disallowed_origin_returns_403(self, cors_client, clean_db):
+        self._make_route(clean_db)
+        response = cors_client.get(
+            '/authz',
+            headers={
+                'X-Original-URI': '/api/cors-test',
+                'X-Original-Method': 'OPTIONS',
+                'X-Original-Origin': 'https://evil.example.com',
+                'Access-Control-Request-Method': 'POST',
+            },
+        )
+
+        assert response.status_code == 403
+        assert b'cors_origin_not_allowed' in response.data
+        assert 'Access-Control-Allow-Origin' not in response.headers
+
+    def test_preflight_unknown_route_returns_403(self, cors_client, clean_db):
+        # No route configured for this path
+        response = cors_client.get(
+            '/authz',
+            headers={
+                'X-Original-URI': '/api/does-not-exist',
+                'X-Original-Method': 'OPTIONS',
+                'X-Original-Origin': 'https://allowed.example.com',
+                'Access-Control-Request-Method': 'POST',
+            },
+        )
+
+        assert response.status_code == 403
+        assert b'no_route_match' in response.data
+
+    def test_preflight_default_request_headers_when_absent(self, cors_client, clean_db):
+        self._make_route(clean_db)
+        response = cors_client.get(
+            '/authz',
+            headers={
+                'X-Original-URI': '/api/cors-test',
+                'X-Original-Method': 'OPTIONS',
+                'X-Original-Origin': 'https://allowed.example.com',
+                'Access-Control-Request-Method': 'POST',
+                # no Access-Control-Request-Headers
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.headers['Access-Control-Allow-Headers'] == 'Content-Type, Authorization'
+
+    def test_preflight_without_allowlist_denies(self, client, clean_db):
+        # Default `client` fixture has no CORS allowlist — preflights are denied.
+        route = Route.create_new(
+            route_pattern='/api/cors-test',
+            domain='*',
+            service_name='test-service',
+            methods={HttpMethod.POST: MethodAuth(auth_required=False)},
+        )
+        clean_db.save_route(route)
+
+        response = client.get(
+            '/authz',
+            headers={
+                'X-Original-URI': '/api/cors-test',
+                'X-Original-Method': 'OPTIONS',
+                'X-Original-Origin': 'https://allowed.example.com',
+                'Access-Control-Request-Method': 'POST',
+            },
+        )
+
+        assert response.status_code == 403
+        assert b'cors_origin_not_allowed' in response.data
+
+    def test_actual_response_carries_cors_headers_when_allowed(self, cors_client, clean_db):
+        # Public route + actual GET from an allowed origin -> 200 with Allow-Origin/Vary
+        route = Route.create_new(
+            route_pattern='/api/cors-public',
+            domain='*',
+            service_name='test-service',
+            methods={HttpMethod.GET: MethodAuth(auth_required=False)},
+        )
+        clean_db.save_route(route)
+
+        response = cors_client.get(
+            '/authz',
+            headers={
+                'X-Original-URI': '/api/cors-public',
+                'X-Original-Method': 'GET',
+                'X-Original-Origin': 'https://allowed.example.com',
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.headers['Access-Control-Allow-Origin'] == 'https://allowed.example.com'
+        assert response.headers['Vary'] == 'Origin'
+
+    def test_actual_response_omits_cors_headers_for_disallowed_origin(self, cors_client, clean_db):
+        route = Route.create_new(
+            route_pattern='/api/cors-public',
+            domain='*',
+            service_name='test-service',
+            methods={HttpMethod.GET: MethodAuth(auth_required=False)},
+        )
+        clean_db.save_route(route)
+
+        response = cors_client.get(
+            '/authz',
+            headers={
+                'X-Original-URI': '/api/cors-public',
+                'X-Original-Method': 'GET',
+                'X-Original-Origin': 'https://evil.example.com',
+            },
+        )
+
+        assert response.status_code == 200
+        assert 'Access-Control-Allow-Origin' not in response.headers
+
+    def test_denial_response_carries_cors_headers_when_allowed(self, cors_client, clean_db):
+        # Auth required route, no credentials -> 403, but with CORS headers so the
+        # browser can actually read the denial reason.
+        route = Route.create_new(
+            route_pattern='/api/cors-protected',
+            domain='*',
+            service_name='test-service',
+            methods={HttpMethod.GET: MethodAuth(auth_required=True, auth_type=AuthType.API_KEY)},
+        )
+        clean_db.save_route(route)
+
+        response = cors_client.get(
+            '/authz',
+            headers={
+                'X-Original-URI': '/api/cors-protected',
+                'X-Original-Method': 'GET',
+                'X-Original-Origin': 'https://allowed.example.com',
+            },
+        )
+
+        assert response.status_code == 403
+        assert response.headers['Access-Control-Allow-Origin'] == 'https://allowed.example.com'
+        assert response.headers['Vary'] == 'Origin'
 
 
 class TestMetricsEndpoint:

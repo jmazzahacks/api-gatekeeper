@@ -18,7 +18,12 @@ from byteforge_loki_logging import configure_logging
 
 import redis
 from src.auth import Authorizer, HMACHandler, RedisNonceStorage, AegisAuthenticator
-from src.utils import get_db_connection, parse_trusted_forwarder_ips, parse_admin_allowlist
+from src.utils import (
+    get_db_connection,
+    parse_trusted_forwarder_ips,
+    parse_admin_allowlist,
+    parse_cors_allowlist,
+)
 from src.database.driver import AuthServiceDB
 from src.blueprints import authz_bp, health_bp, metrics_bp, aegis_webhook_bp, admin_bp, auth_bp, config_bp
 from src.rate_limiter import RateLimiter, RedisBackend
@@ -196,6 +201,20 @@ def create_app(
             'trusted_ips': sorted(trusted_ips)
         })
 
+    # Parse CORS allowlist. Without it, /authz denies all OPTIONS preflights
+    # (the original behavior); with it, preflights for matching routes are
+    # short-circuited and CORS headers are stamped on actual responses.
+    cors_allowlist = parse_cors_allowlist(os.environ.get('CORS_ALLOWED_ORIGINS'))
+    if cors_allowlist:
+        logger.info("CORS allowlist configured", extra={
+            'cors_origins': sorted(cors_allowlist),
+        })
+    else:
+        logger.info(
+            "CORS_ALLOWED_ORIGINS not set; OPTIONS preflights will be denied "
+            "unless OPTIONS is explicitly added to a route's allow-list"
+        )
+
     # Aegis webhook configuration
     webhook_secret = os.environ.get('AEGIS_WEBHOOK_SECRET')
     admin_allowlist = parse_admin_allowlist(os.environ.get('AEGIS_ADMIN_EMAILS'))
@@ -238,6 +257,7 @@ def create_app(
     app.config['RATE_LIMITER'] = rate_limiter
     app.config['REDIS_CLIENT'] = redis_client
     app.config['TRUSTED_FORWARDER_IPS'] = trusted_ips
+    app.config['CORS_ALLOWED_ORIGINS'] = cors_allowlist
     app.config['AEGIS_WEBHOOK_SECRET'] = webhook_secret
     app.config['AEGIS_ADMIN_ALLOWLIST'] = admin_allowlist
     app.config['AEGIS_AUTHENTICATOR'] = aegis_authenticator

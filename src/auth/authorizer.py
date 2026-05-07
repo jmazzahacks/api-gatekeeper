@@ -141,6 +141,19 @@ class Authorizer:
 
         return permission_result
 
+    def find_best_route(self, path: str, domain: Optional[str] = None) -> Optional[Route]:
+        """
+        Return the best-matching route for a path/domain, or None.
+
+        Public counterpart to the private match/select pair, exposed for
+        callers (e.g. the CORS preflight handler) that need a route lookup
+        without running the full authorize_request pipeline.
+        """
+        matches = self._match_routes(path, domain)
+        if not matches:
+            return None
+        return self._select_best_route(matches, path)
+
     def _match_routes(self, path: str, domain: Optional[str] = None) -> List[Route]:
         """
         Find all routes that match the given path and domain.
