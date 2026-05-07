@@ -20,7 +20,7 @@ import redis
 from src.auth import Authorizer, HMACHandler, RedisNonceStorage, AegisAuthenticator
 from src.utils import get_db_connection, parse_trusted_forwarder_ips, parse_admin_allowlist
 from src.database.driver import AuthServiceDB
-from src.blueprints import authz_bp, health_bp, metrics_bp, aegis_webhook_bp, admin_bp, auth_bp
+from src.blueprints import authz_bp, health_bp, metrics_bp, aegis_webhook_bp, admin_bp, auth_bp, config_bp
 from src.rate_limiter import RateLimiter, RedisBackend
 
 logger = logging.getLogger(__name__)
@@ -242,6 +242,12 @@ def create_app(
     app.config['AEGIS_ADMIN_ALLOWLIST'] = admin_allowlist
     app.config['AEGIS_AUTHENTICATOR'] = aegis_authenticator
 
+    # Frontend runtime config — served by /api/config so a single frontend image
+    # can be redeployed across tenants without rebuilding (no NEXT_PUBLIC_* baking).
+    app.config['AEGIS_API_URL'] = aegis_api_url or ''
+    app.config['SITE_NAME'] = os.environ.get('SITE_NAME', 'gatekeeper')
+    app.config['SITE_DOMAIN'] = os.environ.get('SITE_DOMAIN', '')
+
     # Aegis public-auth proxy (login, register, verify-email, password reset).
     # Requires both AEGIS_SITE_ID and AEGIS_TENANT_API_KEY plus AEGIS_API_URL.
     # If any are missing, the /api/auth/* endpoints will 500 on first call —
@@ -266,6 +272,7 @@ def create_app(
     app.register_blueprint(aegis_webhook_bp)
     app.register_blueprint(admin_bp)
     app.register_blueprint(auth_bp)
+    app.register_blueprint(config_bp)
 
     return app
 
