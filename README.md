@@ -19,7 +19,8 @@ A flexible authentication and authorization service designed to work with nginx'
 - **Audit Logging**: Comprehensive structured logging via Loki with full request context
 - **Prometheus Metrics**: Built-in metrics endpoint for monitoring and alerting
 - **Trusted Forwarder Support**: Correct client IP resolution when auth subrequests route through Cloudflare
-- **Comprehensive Testing**: 215 tests with 100% pass rate
+- **Aegis-Backed Admin Console**: Bearer-token auth on `/api/admin/*`, public-auth proxy on `/api/auth/*`, webhook-driven admin provisioning, runtime config for the Next.js console
+- **Comprehensive Testing**: 330 tests with 100% pass rate
 
 ## Architecture
 
@@ -88,6 +89,20 @@ location = /auth {
 
 **Security**: If the caller IP is not in `TRUSTED_FORWARDER_IPS`, the `X-Original-Client-IP` header is ignored entirely — preventing spoofing by arbitrary clients.
 
+### Aegis Integration
+
+The gatekeeper itself is the auth/authz engine for *services it protects via nginx auth_request*. Its own admin console is a separate concern that uses [ByteForge Aegis](https://github.com/jmazzahacks/byteforge-aegis-client-py) for human-user authentication. Four moving parts:
+
+1. **Bearer-token auth on `/api/admin/*`** — every admin endpoint (`@require_console_admin`) takes an Aegis `auth_token` from the `Authorization` header, calls Aegis's `/api/auth/me`, then checks the resolved user is provisioned in `console_admins`. A small in-memory positive cache (60s TTL by default) keeps the per-request round-trip out of the hot path. See `src/auth/aegis_authenticator.py`.
+
+2. **Public-auth proxy on `/api/auth/*`** — login, register, verify-email, check-verification-token, request-password-reset, reset-password. Aegis requires `X-Tenant-Api-Key` on these six endpoints (so a public client can't impersonate a tenant). The browser must NEVER hold this key, so the gatekeeper proxies the calls and attaches the key server-side from `AEGIS_TENANT_API_KEY`. See `src/auth/aegis_tenant.py` and `src/blueprints/auth.py`.
+
+3. **Webhook-driven admin provisioning** at `/api/webhooks/aegis`. When Aegis fires a `user.verified` webhook, the gatekeeper inserts a row into `console_admins` if-and-only-if the email is in the comma-separated `AEGIS_ADMIN_EMAILS` allowlist. Webhook signature is HMAC-SHA256-verified using `AEGIS_WEBHOOK_SECRET`. Default is closed (empty allowlist = nobody gets provisioned).
+
+4. **Runtime config at `/api/config`** — public, no auth, returns `{aegisApiUrl, siteName, siteDomain}` from env vars (`AEGIS_API_URL`, `SITE_NAME`, `SITE_DOMAIN`). The Next.js console fetches this at first paint instead of baking URLs into its bundle, so a single frontend image deploys across tenants. See `src/blueprints/config.py`.
+
+The required environment variables for each piece are documented in [env.example](env.example).
+
 ## Quick Start
 
 ### Prerequisites
@@ -147,10 +162,18 @@ source bin/activate
 python src/app.py
 ```
 
-The server starts on **port 7843** with three endpoints:
-- **`/authz`**: Authorization endpoint (for nginx auth_request)
+The server starts on **port 7843** and exposes:
+
+**For nginx + monitoring:**
+- **`/authz`**: Authorization endpoint (for nginx auth_request on protected services)
 - **`/health`**: Health check endpoint (verifies database and Redis connectivity)
 - **`/metrics`**: Prometheus metrics endpoint (for monitoring and alerting)
+
+**For the admin console** (gated by Aegis bearer auth, except `/api/config` which is public):
+- **`/api/admin/clients`**, **`/api/admin/routes`**, **`/api/admin/permissions`**: Admin-console list endpoints
+- **`/api/auth/*`**: Public auth proxy (login, register, verify-email, password reset) — attaches the per-tenant Aegis API key server-side so it never ships to the browser
+- **`/api/webhooks/aegis`**: Aegis webhook receiver — provisions `console_admins` rows from `user.verified` events
+- **`/api/config`**: Runtime config consumed by the console frontend on first paint (so a single frontend image deploys across tenants)
 
 ### Testing the Server
 
@@ -455,74 +478,72 @@ python -m pytest -v
 **Test database:**
 - All tests use `api_auth_admin_test` database
 - Automatic cleanup between tests
-- **215 tests** covering:
-  - Route models with domain matching (28 tests)
-  - Database driver operations (22 tests)
-  - Client operations and permissions (30 tests)
-  - Authorization engine (21 tests)
-  - Authentication handlers (40 tests)
-  - Flask HTTP endpoints (23 tests)
-  - Rate limiting (17 tests)
-  - Nonce storage (13 tests)
-  - IP resolution and trusted forwarders (21 tests)
+- **330 tests** covering the data-plane (route matching, HMAC, rate limiting, nonce storage, IP resolution) plus the admin-console plane (Aegis bearer-auth decorator, /api/admin/* endpoints, /api/auth/* proxy, /api/webhooks/aegis signature verification, /api/config wire format)
 
 ## Project Structure
 
 ```
-api-gatekeeper/
+gatekeeper-backend/
 ├── src/
-│   ├── app.py               # Flask HTTP application
+│   ├── app.py               # Flask app factory; wires blueprints, DB, Redis, Aegis
 │   ├── monitoring.py        # Prometheus metrics
 │   ├── rate_limiter.py      # Redis-backed rate limiting
-│   ├── auth/                # Authorization & authentication
-│   │   ├── models.py        # AuthResult model
-│   │   ├── authorizer.py    # Authorization engine
-│   │   ├── hmac_handler.py  # HMAC signature validation
-│   │   ├── api_key_handler.py   # API key extraction
-│   │   ├── nonce_storage.py     # Redis nonce storage for replay protection
-│   │   └── request_signer.py    # Test utility for HMAC
+│   ├── auth/                # Authentication + authorization
+│   │   ├── models.py                  # AuthResult model
+│   │   ├── authorizer.py              # Authorization engine (route + permission)
+│   │   ├── hmac_handler.py            # HMAC signature validation
+│   │   ├── api_key_handler.py         # API key extraction
+│   │   ├── nonce_storage.py           # Redis nonce storage for replay protection
+│   │   ├── request_signer.py          # Test utility for HMAC
+│   │   ├── aegis_authenticator.py     # Aegis bearer-token introspection + admin lookup
+│   │   ├── aegis_tenant.py            # Aegis tenant-key client for /api/auth/* proxy
+│   │   └── console_admin_decorator.py # @require_console_admin decorator
 │   ├── blueprints/          # Flask blueprints
-│   │   ├── authz.py         # Authorization endpoint
-│   │   ├── health.py        # Health check endpoint
-│   │   └── metrics.py       # Prometheus metrics endpoint
+│   │   ├── authz.py         # /authz — nginx auth_request endpoint
+│   │   ├── health.py        # /health
+│   │   ├── metrics.py       # /metrics
+│   │   ├── admin.py         # /api/admin/* — clients, routes, permissions
+│   │   ├── auth.py          # /api/auth/* — public auth proxy to Aegis
+│   │   ├── aegis_webhook.py # /api/webhooks/aegis — admin provisioning
+│   │   └── config.py        # /api/config — runtime config for the frontend
 │   ├── database/            # Database layer
-│   │   ├── schema.sql       # PostgreSQL schema
+│   │   ├── schema.sql       # PostgreSQL schema (routes, clients, permissions,
+│   │   │                    #   rate_limits, console_admins)
 │   │   └── driver.py        # CRUD operations with connection pooling
 │   └── utils/               # Utilities
-│       ├── db_connection.py # Database connection helper
-│       └── ip_resolver.py   # Client IP resolution with trusted forwarder support
+│       ├── db_connection.py        # Database connection helper
+│       ├── ip_resolver.py          # Client IP resolution w/ trusted forwarders
+│       └── admin_allowlist.py      # AEGIS_ADMIN_EMAILS parsing
 ├── docs/                    # Documentation
 │   ├── ARCHITECTURE.md      # System architecture
 │   ├── DATABASE_SETUP.md    # Database setup guide
+│   ├── DOCKER_DEPLOYMENT.md # Docker deployment guide
+│   ├── HOW_TO_GATEKEEPER_AUTH_NGINX.md  # Nginx auth_request integration
 │   └── ROADMAP.md           # Development roadmap
-├── nginx/                   # Nginx integration
-│   └── auth-example.conf    # Example nginx config with auth_request
-├── scripts/                 # Management scripts
-│   ├── create_route.py      # Create routes
-│   ├── list_routes.py       # List all routes
-│   ├── delete_route.py      # Delete routes
-│   ├── create_client.py     # Create clients
-│   ├── list_clients.py      # List all clients
-│   ├── delete_client.py     # Delete clients
-│   ├── grant_permission.py  # Grant permissions
-│   ├── list_permissions.py  # List permissions
-│   ├── revoke_permission.py # Revoke permissions
-│   ├── set_rate_limit.py    # Set client rate limits
-│   ├── list_rate_limits.py  # List all rate limits
-│   └── setup_test_data.py   # Create test data
-├── tests/                   # Test suite (215 tests)
-│   ├── conftest.py          # Test fixtures
-│   ├── test_database_driver.py      # Database CRUD tests
-│   ├── test_client_operations.py    # Client/permission tests
-│   ├── test_route_model.py          # Model validation and domain matching tests
-│   ├── test_authorizer.py           # Authorization engine tests
-│   ├── test_auth_handlers.py        # Authentication handler tests
-│   ├── test_flask_app.py            # Flask endpoint tests
-│   ├── test_rate_limiter.py         # Rate limiting tests
-│   ├── test_nonce_storage.py        # Nonce storage tests
-│   └── test_ip_resolver.py         # IP resolution and trusted forwarder tests
+├── nginx/                   # Nginx integration examples
+│   ├── auth-example.conf    # Example for protected services using auth_request
+│   └── example-site.conf    # Example for the gatekeeper console host itself
+├── scripts/                 # Management scripts (see env.example for db setup)
+│   ├── create_route.py / list_routes.py / delete_route.py / update_route.py
+│   ├── create_client.py / list_clients.py / delete_client.py / show_client.py
+│   ├── grant_permission.py / list_permissions.py / revoke_permission.py
+│   ├── set_rate_limit.py / list_rate_limits.py
+│   └── setup_test_data.py
+├── tests/                   # Test suite (330 tests)
+│   ├── conftest.py
+│   ├── test_database_driver.py / test_client_operations.py / test_route_model.py
+│   ├── test_authorizer.py / test_auth_handlers.py / test_flask_app.py
+│   ├── test_rate_limiter.py / test_nonce_storage.py / test_ip_resolver.py
+│   ├── test_admin_clients.py / test_admin_routes.py / test_admin_permissions.py
+│   ├── test_admin_allowlist.py / test_console_admin_decorator.py
+│   ├── test_aegis_authenticator.py / test_auth_proxy.py
+│   ├── test_aegis_webhook.py / test_webhook_verifier.py
+│   └── test_runtime_config.py
 └── dev_scripts/             # Development utilities
-    └── setup_database.py    # Database initialization
+    ├── setup_database.py    # Idempotent: creates user/db, applies schema
+    ├── recreate_database.py # Drops and recreates (destructive — dev only)
+    ├── verify_schema.py     # Inspects current schema state
+    └── setup_production_test_data.py
 ```
 
 ## Configuration
@@ -556,6 +577,23 @@ No code changes or service restarts required.
 - `REDIS_PASSWORD`: Redis password (optional)
 - `REDIS_DB`: Redis database number (default: `0`)
 - `TRUSTED_FORWARDER_IPS`: Comma-separated list of upstream server IPs trusted to forward `X-Original-Client-IP` (default: none)
+
+### Aegis integration (required for the admin console)
+
+These are documented in detail in [env.example](env.example). Without them the data plane (`/authz`, HMAC, rate limiting) still works, but the admin console returns 503 / 500 from the relevant endpoints.
+
+- `AEGIS_API_URL`: Aegis base URL (e.g. `https://aegis.example.com`). Required for `/api/admin/*`, `/api/auth/*`, and `/api/config`.
+- `AEGIS_SITE_ID`, `AEGIS_TENANT_API_KEY`: Aegis site ID and per-tenant API key. Required for the `/api/auth/*` public proxy. Treat the key as a secret.
+- `AEGIS_WEBHOOK_SECRET`: HMAC-SHA256 secret Aegis signs `user.verified` webhooks with. Required for `/api/webhooks/aegis` (otherwise every webhook is rejected as unauthorized).
+- `AEGIS_ADMIN_EMAILS`: Comma-separated allowlist of emails authorized to be provisioned as console admins. Default closed — empty means nobody is provisioned.
+- `AEGIS_AUTH_CACHE_TTL_SECONDS`: Positive-cache TTL for resolved bearer tokens (default: `60`). Set to `0` to disable caching.
+
+### Frontend runtime config (served by `/api/config`)
+
+The Next.js console fetches these at first paint via `/api/config`. All defaults are display-only.
+
+- `SITE_NAME`: Branding string in the console header (default: `gatekeeper`).
+- `SITE_DOMAIN`: Domain shown in the console UI (default: empty).
 
 ## Security Considerations
 
@@ -672,12 +710,18 @@ Currently using `schema.sql` with `CREATE TABLE IF NOT EXISTS`. For production, 
 - [x] Client IP and request duration logging
 - [x] Queryable audit trail in Grafana
 
+**Phase 8: Admin Console (Complete)**
+- [x] Admin REST API (`/api/admin/clients`, `/api/admin/routes`, `/api/admin/permissions`)
+- [x] Web dashboard ([gatekeeper-frontend](../gatekeeper-frontend), Next.js)
+- [x] Client SDKs ([api-gatekeeper-api-js](../api-gatekeeper-api-js), [api-gatekeeper-api-python](../api-gatekeeper-api-python))
+- [x] Aegis-based authentication (bearer-token introspection, webhook-driven admin provisioning, public-auth proxy with per-tenant API key)
+- [x] Runtime config endpoint (`/api/config`) so a single frontend image deploys across tenants
+
 ### Planned
 
-**Phase 8: Enhancements**
-- [ ] Admin REST API
-- [ ] Web dashboard
-- [ ] Client SDKs
+**Phase 9: Polish**
+- [ ] Rate-limits dashboard panel (data exists; UI not wired)
+- [ ] Per-tenant config script for new-host bring-up
 
 ## Documentation
 
@@ -708,4 +752,4 @@ For issues and questions:
 
 ---
 
-**Status**: Phases 1-7 complete. Production-ready with multi-domain routing, rate limiting, HMAC replay protection, trusted forwarder IP resolution, comprehensive audit logging, and Prometheus metrics. 215 tests passing. Ready for Phase 8 enhancements.
+**Status**: Phases 1-8 complete. Production-ready data plane (multi-domain routing, rate limiting, HMAC replay protection, trusted forwarder IP resolution, comprehensive audit logging, Prometheus metrics) plus Aegis-backed admin console (admin REST API, web dashboard, client SDKs, runtime-config-driven multi-tenant deploy). 330 tests passing.
