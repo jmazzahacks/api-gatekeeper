@@ -53,9 +53,10 @@ def authorize():
 
     OPTIONS preflights are short-circuited before authentication: gatekeeper
     looks up the route, checks the Origin against CORS_ALLOWED_ORIGINS, and
-    returns the CORS preflight headers without invoking auth/method checks.
-    The auth_request consumer's nginx must propagate these headers via
-    `auth_request_set` and short-circuit OPTIONS with `return 204`.
+    returns 200 (or 403 if the origin isn't allowed). The protected upstream
+    is responsible for emitting the Access-Control-* response headers — see
+    NGINX_CONF_SKILL.md for the architecture and the phase-ordering reason
+    nginx can't relay gatekeeper-built CORS headers via auth_request_set.
     """
     start_time = time.time()
 
@@ -259,10 +260,14 @@ def _handle_cors_preflight(
     """
     Build the CORS preflight response.
 
-    Returns 200 with Access-Control-* headers when the route exists and the
-    origin is on the allowlist. The auth_request consumer's nginx is expected
-    to propagate these headers via `auth_request_set` and reply 204 to the
-    browser. Returns 403 when the route is unknown or the origin isn't allowed.
+    Returns 200 when the route exists and the origin is on the allowlist;
+    nginx then forwards the OPTIONS to the upstream, which emits the actual
+    Access-Control-* headers. Returns 403 when the route is unknown or the
+    origin isn't allowed (browser preflight fails, request never sent).
+
+    The Access-Control-* headers stamped here are advisory — useful for
+    `proxy_pass`-to-/authz consumer setups (see NGINX_CONF_SKILL.md), but
+    ignored under the recommended upstream-emits-CORS architecture.
     """
     authorizer = current_app.config['AUTHORIZER']
     allowlist = current_app.config.get('CORS_ALLOWED_ORIGINS', frozenset())
