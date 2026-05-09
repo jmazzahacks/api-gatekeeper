@@ -4,6 +4,7 @@ Integration tests for GET /api/admin/routes.
 Covers: 401 without bearer, 401 for unprovisioned Aegis user, 200 with
 empty list, 200 with seeded routes. Patches AegisClient.me() for auth.
 """
+import logging
 import time
 import pytest
 
@@ -160,3 +161,288 @@ class TestListRoutesResponses:
         users_route = next(r for r in body if r['route_pattern'] == '/api/users/*')
         assert set(users_route['methods'].keys()) == {'GET', 'POST'}
         assert users_route['methods']['POST']['auth_type'] == 'hmac'
+
+
+class TestCreateRoute:
+    def test_create_route_persists_and_returns_201(self, admin_client):
+        client, db = admin_client
+        payload = {
+            'route_pattern': '/api/widgets',
+            'domain': 'api.example.com',
+            'service_name': 'widget-svc',
+            'methods': {
+                'GET': {'auth_required': False, 'auth_type': None},
+                'POST': {'auth_required': True, 'auth_type': 'api_key'},
+            },
+        }
+
+        response = client.post('/api/admin/routes', headers=_bearer(), json=payload)
+        assert response.status_code == 201
+        body = response.get_json()
+        assert body['route_id']
+        assert body['route_pattern'] == '/api/widgets'
+        assert body['methods']['POST']['auth_type'] == 'api_key'
+
+        stored = db.load_route_by_id(body['route_id'])
+        assert stored is not None
+        assert stored.service_name == 'widget-svc'
+
+    def test_create_route_requires_authorization(self, admin_client):
+        client, _ = admin_client
+        response = client.post('/api/admin/routes', json={})
+        assert response.status_code == 401
+
+    def test_create_route_rejects_missing_field(self, admin_client):
+        client, _ = admin_client
+        response = client.post(
+            '/api/admin/routes',
+            headers=_bearer(),
+            json={'domain': '*', 'service_name': 'svc', 'methods': {'GET': {'auth_required': False}}},
+        )
+        assert response.status_code == 400
+        assert 'route_pattern' in response.get_json()['message']
+
+    def test_create_route_rejects_unknown_method(self, admin_client):
+        client, _ = admin_client
+        response = client.post(
+            '/api/admin/routes',
+            headers=_bearer(),
+            json={
+                'route_pattern': '/api/x',
+                'domain': '*',
+                'service_name': 'svc',
+                'methods': {'TRACE': {'auth_required': False}},
+            },
+        )
+        assert response.status_code == 400
+
+    def test_create_route_rejects_auth_required_without_type(self, admin_client):
+        client, _ = admin_client
+        response = client.post(
+            '/api/admin/routes',
+            headers=_bearer(),
+            json={
+                'route_pattern': '/api/x',
+                'domain': '*',
+                'service_name': 'svc',
+                'methods': {'GET': {'auth_required': True}},
+            },
+        )
+        assert response.status_code == 400
+
+    def test_create_route_rejects_pattern_without_leading_slash(self, admin_client):
+        """Route() __post_init__ rejects this — endpoint must surface as 400, not 500."""
+        client, _ = admin_client
+        response = client.post(
+            '/api/admin/routes',
+            headers=_bearer(),
+            json={
+                'route_pattern': 'no-leading-slash',
+                'domain': '*',
+                'service_name': 'svc',
+                'methods': {'GET': {'auth_required': False}},
+            },
+        )
+        assert response.status_code == 400
+
+
+class TestUpdateRoute:
+    def _seed_route(self, db) -> Route:
+        route = Route.create_new(
+            route_pattern='/api/orig',
+            domain='*',
+            service_name='orig-svc',
+            methods={HttpMethod.GET: MethodAuth(auth_required=False)},
+        )
+        db.save_route(route)
+        return route
+
+    def test_update_route_replaces_fields(self, admin_client):
+        client, db = admin_client
+        route = self._seed_route(db)
+
+        payload = {
+            'route_pattern': '/api/renamed',
+            'domain': 'api.example.com',
+            'service_name': 'renamed-svc',
+            'methods': {
+                'GET': {'auth_required': True, 'auth_type': 'hmac'},
+            },
+        }
+
+        response = client.put(
+            f'/api/admin/routes/{route.route_id}',
+            headers=_bearer(),
+            json=payload,
+        )
+        assert response.status_code == 200
+        body = response.get_json()
+        assert body['route_id'] == route.route_id
+        assert body['route_pattern'] == '/api/renamed'
+        assert body['created_at'] == route.created_at
+        assert body['updated_at'] >= route.updated_at
+
+        stored = db.load_route_by_id(route.route_id)
+        assert stored.service_name == 'renamed-svc'
+        assert stored.methods[HttpMethod.GET].auth_type == AuthType.HMAC
+
+    def test_update_route_unknown_id_returns_404(self, admin_client):
+        client, _ = admin_client
+        response = client.put(
+            '/api/admin/routes/00000000-0000-0000-0000-000000000000',
+            headers=_bearer(),
+            json={
+                'route_pattern': '/api/x',
+                'domain': '*',
+                'service_name': 'svc',
+                'methods': {'GET': {'auth_required': False}},
+            },
+        )
+        assert response.status_code == 404
+
+    def test_update_route_requires_authorization(self, admin_client):
+        client, db = admin_client
+        route = self._seed_route(db)
+        response = client.put(f'/api/admin/routes/{route.route_id}', json={})
+        assert response.status_code == 401
+
+    def test_update_route_validates_payload(self, admin_client):
+        client, db = admin_client
+        route = self._seed_route(db)
+        response = client.put(
+            f'/api/admin/routes/{route.route_id}',
+            headers=_bearer(),
+            json={'route_pattern': '/api/x', 'domain': '*', 'service_name': 'svc', 'methods': {}},
+        )
+        assert response.status_code == 400
+
+    def test_update_route_rejects_pattern_without_leading_slash(self, admin_client):
+        """Regression: Route() __post_init__ runs after parser; must still 400."""
+        client, db = admin_client
+        route = self._seed_route(db)
+        response = client.put(
+            f'/api/admin/routes/{route.route_id}',
+            headers=_bearer(),
+            json={
+                'route_pattern': 'no-leading-slash',
+                'domain': '*',
+                'service_name': 'svc',
+                'methods': {'GET': {'auth_required': False}},
+            },
+        )
+        assert response.status_code == 400
+
+
+class TestDeleteRoute:
+    def test_delete_route_removes_record(self, admin_client):
+        client, db = admin_client
+        route = Route.create_new(
+            route_pattern='/api/gone',
+            domain='*',
+            service_name='gone-svc',
+            methods={HttpMethod.GET: MethodAuth(auth_required=False)},
+        )
+        db.save_route(route)
+
+        response = client.delete(f'/api/admin/routes/{route.route_id}', headers=_bearer())
+        assert response.status_code == 204
+        assert db.load_route_by_id(route.route_id) is None
+
+    def test_delete_route_unknown_id_returns_404(self, admin_client):
+        client, _ = admin_client
+        response = client.delete(
+            '/api/admin/routes/00000000-0000-0000-0000-000000000000',
+            headers=_bearer(),
+        )
+        assert response.status_code == 404
+
+    def test_delete_route_requires_authorization(self, admin_client):
+        client, db = admin_client
+        route = Route.create_new(
+            route_pattern='/api/gone',
+            domain='*',
+            service_name='gone-svc',
+            methods={HttpMethod.GET: MethodAuth(auth_required=False)},
+        )
+        db.save_route(route)
+        response = client.delete(f'/api/admin/routes/{route.route_id}')
+        assert response.status_code == 401
+
+
+class TestRouteAuditLogging:
+    """Regression guard: each mutation must emit a structured audit line tagged
+    with the admin's email so post-incident review can attribute the change."""
+
+    def _audit_records(self, caplog) -> list[logging.LogRecord]:
+        return [r for r in caplog.records if r.name == 'src.blueprints.admin']
+
+    def test_create_emits_audit_log(self, admin_client, caplog):
+        client, _ = admin_client
+        with caplog.at_level(logging.INFO, logger='src.blueprints.admin'):
+            response = client.post(
+                '/api/admin/routes',
+                headers=_bearer(),
+                json={
+                    'route_pattern': '/api/audit',
+                    'domain': '*',
+                    'service_name': 'audit-svc',
+                    'methods': {'GET': {'auth_required': False}},
+                },
+            )
+        assert response.status_code == 201
+
+        records = self._audit_records(caplog)
+        assert any(r.message == 'Route created' for r in records)
+        created = next(r for r in records if r.message == 'Route created')
+        assert created.admin_email == EMAIL
+        assert created.route_pattern == '/api/audit'
+        assert created.methods == ['GET']
+
+    def test_update_emits_audit_log(self, admin_client, caplog):
+        client, db = admin_client
+        route = Route.create_new(
+            route_pattern='/api/orig',
+            domain='*',
+            service_name='orig-svc',
+            methods={HttpMethod.GET: MethodAuth(auth_required=False)},
+        )
+        db.save_route(route)
+
+        with caplog.at_level(logging.INFO, logger='src.blueprints.admin'):
+            response = client.put(
+                f'/api/admin/routes/{route.route_id}',
+                headers=_bearer(),
+                json={
+                    'route_pattern': '/api/renamed',
+                    'domain': '*',
+                    'service_name': 'orig-svc',
+                    'methods': {'GET': {'auth_required': False}},
+                },
+            )
+        assert response.status_code == 200
+
+        records = self._audit_records(caplog)
+        updated = next(r for r in records if r.message == 'Route updated')
+        assert updated.admin_email == EMAIL
+        assert updated.route_id == route.route_id
+        assert updated.route_pattern == '/api/renamed'
+
+    def test_delete_emits_audit_log(self, admin_client, caplog):
+        client, db = admin_client
+        route = Route.create_new(
+            route_pattern='/api/gone',
+            domain='*',
+            service_name='gone-svc',
+            methods={HttpMethod.GET: MethodAuth(auth_required=False)},
+        )
+        db.save_route(route)
+
+        with caplog.at_level(logging.INFO, logger='src.blueprints.admin'):
+            response = client.delete(f'/api/admin/routes/{route.route_id}', headers=_bearer())
+        assert response.status_code == 204
+
+        records = self._audit_records(caplog)
+        deleted = next(r for r in records if r.message == 'Route deleted')
+        assert deleted.admin_email == EMAIL
+        assert deleted.route_id == route.route_id
+        assert deleted.route_pattern == '/api/gone'
