@@ -5,6 +5,7 @@ Covers: 401 without bearer, 401 for unprovisioned Aegis user, 200 with empty
 list, 200 with seeded permissions, that display fields are joined, and that
 allowed_methods serialize as strings.
 """
+import logging
 import time
 import pytest
 
@@ -188,3 +189,279 @@ class TestListPermissionsResponses:
         for row in body:
             assert row['client_name'] in {'alpha', 'gamma'}
             assert row['route_pattern'] in {'/api/a', '/api/b'}
+
+
+class TestCreatePermission:
+    def test_grants_returns_201_with_joined_summary(self, admin_client):
+        client, db = admin_client
+        c = _seed_client(db, 'alpha', 'secret-alpha', 'ak_alpha_xxxxxxx')
+        r = _seed_route(db, '/api/users', 'api.example.com', 'user-svc')
+
+        response = client.post(
+            '/api/admin/permissions',
+            headers=_bearer(),
+            json={
+                'client_id': c.client_id,
+                'route_id': r.route_id,
+                'allowed_methods': ['GET', 'POST'],
+            },
+        )
+        assert response.status_code == 201
+        body = response.get_json()
+        assert body['permission_id']
+        assert body['client_id'] == c.client_id
+        assert body['client_name'] == 'alpha'
+        assert body['route_pattern'] == '/api/users'
+        assert set(body['allowed_methods']) == {'GET', 'POST'}
+
+        stored = db.load_permission_by_client_and_route(c.client_id, r.route_id)
+        assert stored is not None
+
+    def test_duplicate_pair_returns_409(self, admin_client):
+        client, db = admin_client
+        c = _seed_client(db, 'alpha', 'secret-alpha', 'ak_alpha_xxxxxxx')
+        r = _seed_route(db, '/api/users', '*', 'user-svc')
+        db.save_permission(ClientPermission.create_new(
+            client_id=c.client_id, route_id=r.route_id,
+            allowed_methods=[HttpMethod.GET],
+        ))
+
+        response = client.post(
+            '/api/admin/permissions',
+            headers=_bearer(),
+            json={
+                'client_id': c.client_id,
+                'route_id': r.route_id,
+                'allowed_methods': ['POST'],
+            },
+        )
+        assert response.status_code == 409
+        assert response.get_json()['error'] == 'conflict'
+
+    def test_unknown_client_returns_400(self, admin_client):
+        client, db = admin_client
+        r = _seed_route(db, '/api/users', '*', 'svc')
+        response = client.post(
+            '/api/admin/permissions',
+            headers=_bearer(),
+            json={
+                'client_id': '00000000-0000-0000-0000-000000000000',
+                'route_id': r.route_id,
+                'allowed_methods': ['GET'],
+            },
+        )
+        assert response.status_code == 400
+        assert 'client_id' in response.get_json()['message']
+
+    def test_unknown_route_returns_400(self, admin_client):
+        client, db = admin_client
+        c = _seed_client(db, 'alpha', 'secret-alpha', 'ak_alpha_xxxxxxx')
+        response = client.post(
+            '/api/admin/permissions',
+            headers=_bearer(),
+            json={
+                'client_id': c.client_id,
+                'route_id': '00000000-0000-0000-0000-000000000000',
+                'allowed_methods': ['GET'],
+            },
+        )
+        assert response.status_code == 400
+        assert 'route_id' in response.get_json()['message']
+
+    def test_empty_methods_returns_400(self, admin_client):
+        client, db = admin_client
+        c = _seed_client(db, 'alpha', 'secret-alpha', 'ak_alpha_xxxxxxx')
+        r = _seed_route(db, '/api/users', '*', 'svc')
+        response = client.post(
+            '/api/admin/permissions',
+            headers=_bearer(),
+            json={
+                'client_id': c.client_id,
+                'route_id': r.route_id,
+                'allowed_methods': [],
+            },
+        )
+        assert response.status_code == 400
+
+    def test_unknown_method_returns_400(self, admin_client):
+        client, db = admin_client
+        c = _seed_client(db, 'alpha', 'secret-alpha', 'ak_alpha_xxxxxxx')
+        r = _seed_route(db, '/api/users', '*', 'svc')
+        response = client.post(
+            '/api/admin/permissions',
+            headers=_bearer(),
+            json={
+                'client_id': c.client_id,
+                'route_id': r.route_id,
+                'allowed_methods': ['TRACE'],
+            },
+        )
+        assert response.status_code == 400
+
+    def test_create_requires_authorization(self, admin_client):
+        client, _ = admin_client
+        response = client.post('/api/admin/permissions', json={})
+        assert response.status_code == 401
+
+
+class TestUpdatePermission:
+    def _seed(self, db):
+        c = _seed_client(db, 'alpha', 'secret-alpha', 'ak_alpha_xxxxxxx')
+        r = _seed_route(db, '/api/users', '*', 'svc')
+        p = ClientPermission.create_new(
+            client_id=c.client_id, route_id=r.route_id,
+            allowed_methods=[HttpMethod.GET],
+        )
+        db.save_permission(p)
+        return c, r, p
+
+    def test_update_replaces_methods(self, admin_client):
+        client, db = admin_client
+        c, r, p = self._seed(db)
+
+        response = client.put(
+            f'/api/admin/permissions/{p.permission_id}',
+            headers=_bearer(),
+            json={'allowed_methods': ['POST', 'DELETE']},
+        )
+        assert response.status_code == 200
+        body = response.get_json()
+        assert set(body['allowed_methods']) == {'POST', 'DELETE'}
+        assert body['permission_id'] == p.permission_id
+
+        stored = db.load_permission_by_id(p.permission_id)
+        assert set(m.value for m in stored.allowed_methods) == {'POST', 'DELETE'}
+
+    def test_unknown_id_returns_404(self, admin_client):
+        client, _ = admin_client
+        response = client.put(
+            '/api/admin/permissions/00000000-0000-0000-0000-000000000000',
+            headers=_bearer(),
+            json={'allowed_methods': ['GET']},
+        )
+        assert response.status_code == 404
+
+    def test_empty_methods_returns_400(self, admin_client):
+        client, db = admin_client
+        _, _, p = self._seed(db)
+        response = client.put(
+            f'/api/admin/permissions/{p.permission_id}',
+            headers=_bearer(),
+            json={'allowed_methods': []},
+        )
+        assert response.status_code == 400
+
+    def test_update_requires_authorization(self, admin_client):
+        client, db = admin_client
+        _, _, p = self._seed(db)
+        response = client.put(f'/api/admin/permissions/{p.permission_id}', json={})
+        assert response.status_code == 401
+
+
+class TestDeletePermission:
+    def test_delete_removes_record(self, admin_client):
+        client, db = admin_client
+        c = _seed_client(db, 'alpha', 'secret-alpha', 'ak_alpha_xxxxxxx')
+        r = _seed_route(db, '/api/users', '*', 'svc')
+        p = ClientPermission.create_new(
+            client_id=c.client_id, route_id=r.route_id,
+            allowed_methods=[HttpMethod.GET],
+        )
+        db.save_permission(p)
+
+        response = client.delete(
+            f'/api/admin/permissions/{p.permission_id}', headers=_bearer(),
+        )
+        assert response.status_code == 204
+        assert db.load_permission_by_id(p.permission_id) is None
+
+    def test_unknown_id_returns_404(self, admin_client):
+        client, _ = admin_client
+        response = client.delete(
+            '/api/admin/permissions/00000000-0000-0000-0000-000000000000',
+            headers=_bearer(),
+        )
+        assert response.status_code == 404
+
+    def test_delete_requires_authorization(self, admin_client):
+        client, db = admin_client
+        c = _seed_client(db, 'alpha', 'secret-alpha', 'ak_alpha_xxxxxxx')
+        r = _seed_route(db, '/api/users', '*', 'svc')
+        p = ClientPermission.create_new(
+            client_id=c.client_id, route_id=r.route_id,
+            allowed_methods=[HttpMethod.GET],
+        )
+        db.save_permission(p)
+        response = client.delete(f'/api/admin/permissions/{p.permission_id}')
+        assert response.status_code == 401
+
+
+class TestPermissionAuditLogging:
+    """Regression guard: each mutation must emit a structured audit line tagged
+    with the admin's email and the affected client + route."""
+
+    def _audit_records(self, caplog) -> list[logging.LogRecord]:
+        return [r for r in caplog.records if r.name == 'src.blueprints.admin']
+
+    def test_create_emits_audit_log(self, admin_client, caplog):
+        client, db = admin_client
+        c = _seed_client(db, 'alpha-audit', 'sa', 'ak_alpha_audit__')
+        r = _seed_route(db, '/api/audit', '*', 'audit-svc')
+
+        with caplog.at_level(logging.INFO, logger='src.blueprints.admin'):
+            response = client.post(
+                '/api/admin/permissions',
+                headers=_bearer(),
+                json={
+                    'client_id': c.client_id,
+                    'route_id': r.route_id,
+                    'allowed_methods': ['GET'],
+                },
+            )
+        assert response.status_code == 201
+        granted = next(r for r in self._audit_records(caplog) if r.message == 'Permission granted')
+        assert granted.admin_email == EMAIL
+        assert granted.client_id == c.client_id
+        assert granted.route_id == r.route_id
+        assert granted.allowed_methods == ['GET']
+
+    def test_update_emits_audit_log(self, admin_client, caplog):
+        client, db = admin_client
+        c = _seed_client(db, 'alpha', 'sa', 'ak_alpha_xxxxxxx')
+        r = _seed_route(db, '/api/audit', '*', 'svc')
+        p = ClientPermission.create_new(
+            client_id=c.client_id, route_id=r.route_id,
+            allowed_methods=[HttpMethod.GET],
+        )
+        db.save_permission(p)
+
+        with caplog.at_level(logging.INFO, logger='src.blueprints.admin'):
+            response = client.put(
+                f'/api/admin/permissions/{p.permission_id}',
+                headers=_bearer(),
+                json={'allowed_methods': ['POST']},
+            )
+        assert response.status_code == 200
+        updated = next(r for r in self._audit_records(caplog) if r.message == 'Permission updated')
+        assert updated.admin_email == EMAIL
+        assert updated.permission_id == p.permission_id
+        assert updated.allowed_methods == ['POST']
+
+    def test_delete_emits_audit_log(self, admin_client, caplog):
+        client, db = admin_client
+        c = _seed_client(db, 'alpha', 'sa', 'ak_alpha_xxxxxxx')
+        r = _seed_route(db, '/api/audit', '*', 'svc')
+        p = ClientPermission.create_new(
+            client_id=c.client_id, route_id=r.route_id,
+            allowed_methods=[HttpMethod.GET],
+        )
+        db.save_permission(p)
+
+        with caplog.at_level(logging.INFO, logger='src.blueprints.admin'):
+            response = client.delete(
+                f'/api/admin/permissions/{p.permission_id}', headers=_bearer(),
+            )
+        assert response.status_code == 204
+        revoked = next(r for r in self._audit_records(caplog) if r.message == 'Permission revoked')
+        assert revoked.admin_email == EMAIL
+        assert revoked.permission_id == p.permission_id

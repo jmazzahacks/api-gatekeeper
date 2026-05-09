@@ -13,6 +13,7 @@ import psycopg2
 from api_gatekeeper_models import (
     AuthType,
     Client,
+    ClientPermission,
     ClientStatus,
     ClientSummary,
     HttpMethod,
@@ -369,6 +370,45 @@ def delete_client(client_id: str):
     return '', 204
 
 
+def _parse_allowed_methods(raw: object) -> list[HttpMethod]:
+    """Validate an allowed_methods array. Raises ValueError on bad input."""
+    if not isinstance(raw, list) or not raw:
+        raise ValueError('allowed_methods must be a non-empty array')
+    methods: list[HttpMethod] = []
+    for entry in raw:
+        if not isinstance(entry, str):
+            raise ValueError('allowed_methods entries must be strings')
+        try:
+            methods.append(HttpMethod(entry))
+        except ValueError:
+            raise ValueError(f'unknown http method: {entry}')
+    # De-duplicate while preserving order
+    seen: set[HttpMethod] = set()
+    deduped: list[HttpMethod] = []
+    for m in methods:
+        if m not in seen:
+            seen.add(m)
+            deduped.append(m)
+    return deduped
+
+
+def _parse_permission_create_payload(body: object) -> tuple[str, str, list[HttpMethod]]:
+    """Validate POST /api/admin/permissions body. Returns (client_id, route_id, methods)."""
+    if not isinstance(body, dict):
+        raise ValueError('request body must be a JSON object')
+
+    client_id = body.get('client_id')
+    if not isinstance(client_id, str) or not client_id:
+        raise ValueError('client_id is required')
+
+    route_id = body.get('route_id')
+    if not isinstance(route_id, str) or not route_id:
+        raise ValueError('route_id is required')
+
+    methods = _parse_allowed_methods(body.get('allowed_methods'))
+    return client_id, route_id, methods
+
+
 @admin_bp.route('/permissions', methods=['GET'])
 @require_console_admin
 def list_permissions():
@@ -387,3 +427,113 @@ def list_permissions():
         for p in permissions
     ]
     return jsonify(rows), 200
+
+
+@admin_bp.route('/permissions', methods=['POST'])
+@require_console_admin
+def create_permission():
+    """Grant a client permission to access a route with specific methods.
+
+    Returns 409 if a permission for the given (client_id, route_id) pair
+    already exists; the caller should PUT to update allowed_methods or DELETE
+    + POST to fully replace the row.
+    """
+    body = request.get_json(silent=True) or {}
+    try:
+        client_id, route_id, methods = _parse_permission_create_payload(body)
+    except ValueError as e:
+        return jsonify({'error': 'invalid_request', 'message': str(e)}), 400
+
+    db = current_app.config['DB']
+    client = db.load_client_by_id(client_id)
+    if client is None:
+        return jsonify({'error': 'invalid_request', 'message': 'client_id not found'}), 400
+    route = db.load_route_by_id(route_id)
+    if route is None:
+        return jsonify({'error': 'invalid_request', 'message': 'route_id not found'}), 400
+
+    existing = db.load_permission_by_client_and_route(client_id, route_id)
+    if existing is not None:
+        return jsonify({
+            'error': 'conflict',
+            'message': 'a permission for this client and route already exists',
+        }), 409
+
+    permission = ClientPermission.create_new(
+        client_id=client_id,
+        route_id=route_id,
+        allowed_methods=methods,
+    )
+    db.save_permission(permission)
+    logger.info("Permission granted", extra={
+        **_admin_log_extra(),
+        'permission_id': permission.permission_id,
+        'client_id': client_id,
+        'client_name': client.client_name,
+        'route_id': route_id,
+        'route_pattern': route.route_pattern,
+        'route_domain': route.domain,
+        'allowed_methods': sorted(m.value for m in methods),
+    })
+    summary = PermissionSummary.from_join(permission, client, route).to_dict()
+    return jsonify(summary), 201
+
+
+@admin_bp.route('/permissions/<permission_id>', methods=['PUT'])
+@require_console_admin
+def update_permission(permission_id: str):
+    """Update allowed_methods on an existing permission. client_id and route_id
+    are immutable here — to change those, DELETE + POST a new permission.
+    """
+    db = current_app.config['DB']
+    existing = db.load_permission_by_id(permission_id)
+    if existing is None:
+        return jsonify({'error': 'not_found', 'message': 'permission not found'}), 404
+
+    body = request.get_json(silent=True) or {}
+    if not isinstance(body, dict):
+        return jsonify({'error': 'invalid_request', 'message': 'body must be an object'}), 400
+    try:
+        methods = _parse_allowed_methods(body.get('allowed_methods'))
+    except ValueError as e:
+        return jsonify({'error': 'invalid_request', 'message': str(e)}), 400
+
+    existing.allowed_methods = methods
+    db.save_permission(existing)
+
+    client = db.load_client_by_id(existing.client_id)
+    route = db.load_route_by_id(existing.route_id)
+    logger.info("Permission updated", extra={
+        **_admin_log_extra(),
+        'permission_id': existing.permission_id,
+        'client_id': existing.client_id,
+        'client_name': client.client_name if client else None,
+        'route_id': existing.route_id,
+        'route_pattern': route.route_pattern if route else None,
+        'allowed_methods': sorted(m.value for m in methods),
+    })
+    summary = PermissionSummary.from_join(existing, client, route).to_dict()
+    return jsonify(summary), 200
+
+
+@admin_bp.route('/permissions/<permission_id>', methods=['DELETE'])
+@require_console_admin
+def delete_permission(permission_id: str):
+    """Revoke a permission."""
+    db = current_app.config['DB']
+    existing = db.load_permission_by_id(permission_id)
+    if existing is None:
+        return jsonify({'error': 'not_found', 'message': 'permission not found'}), 404
+
+    client = db.load_client_by_id(existing.client_id)
+    route = db.load_route_by_id(existing.route_id)
+    db.delete_permission(permission_id)
+    logger.info("Permission revoked", extra={
+        **_admin_log_extra(),
+        'permission_id': existing.permission_id,
+        'client_id': existing.client_id,
+        'client_name': client.client_name if client else None,
+        'route_id': existing.route_id,
+        'route_pattern': route.route_pattern if route else None,
+    })
+    return '', 204
