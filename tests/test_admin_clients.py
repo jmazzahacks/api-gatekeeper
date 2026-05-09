@@ -5,6 +5,7 @@ Covers: 401 without bearer, 401 for unprovisioned Aegis user, 200 with empty
 list, 200 with seeded clients, and — most importantly — that shared_secret is
 never returned and api_key is masked.
 """
+import logging
 import time
 import pytest
 
@@ -221,3 +222,300 @@ class TestListClientsResponses:
 
         response = client.get('/api/admin/clients', headers=_bearer())
         assert response.get_json()[0]['status'] == 'suspended'
+
+
+class TestCreateClient:
+    def test_generate_both_credentials_returns_raw_values(self, admin_client):
+        client, db = admin_client
+        response = client.post(
+            '/api/admin/clients',
+            headers=_bearer(),
+            json={
+                'client_name': 'mobile-app',
+                'api_key': {'generate': True},
+                'shared_secret': {'generate': True},
+            },
+        )
+        assert response.status_code == 201
+        body = response.get_json()
+        assert body['client_id']
+        assert body['client_name'] == 'mobile-app'
+        assert body['api_key']  # full raw value (not masked)
+        assert body['shared_secret']
+        assert len(body['api_key']) >= 30
+        assert len(body['shared_secret']) >= 30
+        assert body['status'] == 'active'
+
+        # Verify it was actually persisted with the same values
+        stored = db.load_client_by_id(body['client_id'])
+        assert stored.api_key == body['api_key']
+        assert stored.shared_secret == body['shared_secret']
+
+    def test_custom_api_key_used_as_is(self, admin_client):
+        client, _ = admin_client
+        response = client.post(
+            '/api/admin/clients',
+            headers=_bearer(),
+            json={
+                'client_name': 'legacy-svc',
+                'api_key': {'value': 'ak_provided_value_12345'},
+                'shared_secret': None,
+            },
+        )
+        assert response.status_code == 201
+        body = response.get_json()
+        assert body['api_key'] == 'ak_provided_value_12345'
+        assert body['shared_secret'] is None
+
+    def test_no_credentials_rejected(self, admin_client):
+        client, _ = admin_client
+        response = client.post(
+            '/api/admin/clients',
+            headers=_bearer(),
+            json={
+                'client_name': 'creds-required',
+                'api_key': None,
+                'shared_secret': None,
+            },
+        )
+        assert response.status_code == 400
+
+    def test_missing_client_name_rejected(self, admin_client):
+        client, _ = admin_client
+        response = client.post(
+            '/api/admin/clients',
+            headers=_bearer(),
+            json={'api_key': {'generate': True}},
+        )
+        assert response.status_code == 400
+
+    def test_invalid_status_rejected(self, admin_client):
+        client, _ = admin_client
+        response = client.post(
+            '/api/admin/clients',
+            headers=_bearer(),
+            json={
+                'client_name': 'bad-status',
+                'api_key': {'generate': True},
+                'status': 'frozen',
+            },
+        )
+        assert response.status_code == 400
+
+    def test_credential_with_both_generate_and_value_rejected(self, admin_client):
+        client, _ = admin_client
+        response = client.post(
+            '/api/admin/clients',
+            headers=_bearer(),
+            json={
+                'client_name': 'ambiguous',
+                'api_key': {'generate': True, 'value': 'x'},
+            },
+        )
+        assert response.status_code == 400
+
+    def test_duplicate_custom_api_key_returns_409(self, admin_client):
+        """Schema has UNIQUE on api_key; a colliding custom value must surface as 409, not 500."""
+        client, db = admin_client
+        db.save_client(Client.create_new(
+            client_name='first', api_key='ak_collision_value', shared_secret=None,
+        ))
+        response = client.post(
+            '/api/admin/clients',
+            headers=_bearer(),
+            json={
+                'client_name': 'second',
+                'api_key': {'value': 'ak_collision_value'},
+                'shared_secret': None,
+            },
+        )
+        assert response.status_code == 409
+        body = response.get_json()
+        assert body['error'] == 'conflict'
+        assert 'api_key' in body['message']
+
+    def test_duplicate_custom_shared_secret_returns_409(self, admin_client):
+        client, db = admin_client
+        db.save_client(Client.create_new(
+            client_name='first', api_key=None, shared_secret='hmac-collision',
+        ))
+        response = client.post(
+            '/api/admin/clients',
+            headers=_bearer(),
+            json={
+                'client_name': 'second',
+                'api_key': None,
+                'shared_secret': {'value': 'hmac-collision'},
+            },
+        )
+        assert response.status_code == 409
+        assert 'shared_secret' in response.get_json()['message']
+
+    def test_create_requires_authorization(self, admin_client):
+        client, _ = admin_client
+        response = client.post('/api/admin/clients', json={})
+        assert response.status_code == 401
+
+
+class TestUpdateClient:
+    def _seed(self, db) -> Client:
+        c = Client.create_new(
+            client_name='before',
+            shared_secret='s', api_key='ak_existing_xxxxxx',
+            status=ClientStatus.ACTIVE,
+        )
+        db.save_client(c)
+        return c
+
+    def test_rename_and_status_change(self, admin_client):
+        client, db = admin_client
+        seeded = self._seed(db)
+
+        response = client.put(
+            f'/api/admin/clients/{seeded.client_id}',
+            headers=_bearer(),
+            json={'client_name': 'after', 'status': 'suspended'},
+        )
+        assert response.status_code == 200
+        body = response.get_json()
+        # Response is the redacted ClientSummary — secrets must not appear
+        assert 'shared_secret' not in body
+        assert 'api_key' not in body
+        assert body['client_name'] == 'after'
+        assert body['status'] == 'suspended'
+
+        # Underlying record retains the original secrets
+        stored = db.load_client_by_id(seeded.client_id)
+        assert stored.api_key == 'ak_existing_xxxxxx'
+        assert stored.shared_secret == 's'
+        assert stored.client_name == 'after'
+        assert stored.status == ClientStatus.SUSPENDED
+
+    def test_unknown_id_returns_404(self, admin_client):
+        client, _ = admin_client
+        response = client.put(
+            '/api/admin/clients/00000000-0000-0000-0000-000000000000',
+            headers=_bearer(),
+            json={'client_name': 'x', 'status': 'active'},
+        )
+        assert response.status_code == 404
+
+    def test_missing_status_rejected(self, admin_client):
+        client, db = admin_client
+        seeded = self._seed(db)
+        response = client.put(
+            f'/api/admin/clients/{seeded.client_id}',
+            headers=_bearer(),
+            json={'client_name': 'x'},
+        )
+        assert response.status_code == 400
+
+    def test_update_requires_authorization(self, admin_client):
+        client, db = admin_client
+        seeded = self._seed(db)
+        response = client.put(f'/api/admin/clients/{seeded.client_id}', json={})
+        assert response.status_code == 401
+
+
+class TestDeleteClient:
+    def test_delete_removes_record(self, admin_client):
+        client, db = admin_client
+        seeded = Client.create_new(
+            client_name='gone',
+            shared_secret='s', api_key='ak_gone_xxxxxxxxx',
+        )
+        db.save_client(seeded)
+
+        response = client.delete(
+            f'/api/admin/clients/{seeded.client_id}', headers=_bearer(),
+        )
+        assert response.status_code == 204
+        assert db.load_client_by_id(seeded.client_id) is None
+
+    def test_unknown_id_returns_404(self, admin_client):
+        client, _ = admin_client
+        response = client.delete(
+            '/api/admin/clients/00000000-0000-0000-0000-000000000000',
+            headers=_bearer(),
+        )
+        assert response.status_code == 404
+
+    def test_delete_requires_authorization(self, admin_client):
+        client, db = admin_client
+        seeded = Client.create_new(
+            client_name='gone',
+            shared_secret='s', api_key='ak_gone_xxxxxxxxx',
+        )
+        db.save_client(seeded)
+        response = client.delete(f'/api/admin/clients/{seeded.client_id}')
+        assert response.status_code == 401
+
+
+class TestClientAuditLogging:
+    """Regression guard: each mutation emits a structured audit line tagged
+    with the admin's email so post-incident review can attribute the change."""
+
+    def _audit_records(self, caplog) -> list[logging.LogRecord]:
+        return [r for r in caplog.records if r.name == 'src.blueprints.admin']
+
+    def test_create_emits_audit_log(self, admin_client, caplog):
+        client, _ = admin_client
+        with caplog.at_level(logging.INFO, logger='src.blueprints.admin'):
+            response = client.post(
+                '/api/admin/clients',
+                headers=_bearer(),
+                json={
+                    'client_name': 'audited',
+                    'api_key': {'generate': True},
+                    'shared_secret': None,
+                },
+            )
+        assert response.status_code == 201
+        records = self._audit_records(caplog)
+        created = next(r for r in records if r.message == 'Client created')
+        assert created.admin_email == EMAIL
+        assert created.client_name == 'audited'
+        assert created.has_api_key is True
+        assert created.has_shared_secret is False
+        # Raw secret must never reach the log record
+        assert 'api_key' not in {k for k in created.__dict__ if k == 'api_key'}
+
+    def test_update_emits_audit_log(self, admin_client, caplog):
+        client, db = admin_client
+        seeded = Client.create_new(
+            client_name='before', api_key='ak_audit_xxxxxxxx', shared_secret=None,
+        )
+        db.save_client(seeded)
+
+        with caplog.at_level(logging.INFO, logger='src.blueprints.admin'):
+            response = client.put(
+                f'/api/admin/clients/{seeded.client_id}',
+                headers=_bearer(),
+                json={'client_name': 'after', 'status': 'suspended'},
+            )
+        assert response.status_code == 200
+        records = self._audit_records(caplog)
+        updated = next(r for r in records if r.message == 'Client updated')
+        assert updated.admin_email == EMAIL
+        assert updated.client_id == seeded.client_id
+        assert updated.client_name == 'after'
+        assert updated.status == 'suspended'
+
+    def test_delete_emits_audit_log(self, admin_client, caplog):
+        client, db = admin_client
+        seeded = Client.create_new(
+            client_name='gone-with-audit',
+            api_key='ak_audit_del_xxxxx', shared_secret=None,
+        )
+        db.save_client(seeded)
+
+        with caplog.at_level(logging.INFO, logger='src.blueprints.admin'):
+            response = client.delete(
+                f'/api/admin/clients/{seeded.client_id}', headers=_bearer(),
+            )
+        assert response.status_code == 204
+        records = self._audit_records(caplog)
+        deleted = next(r for r in records if r.message == 'Client deleted')
+        assert deleted.admin_email == EMAIL
+        assert deleted.client_id == seeded.client_id
+        assert deleted.client_name == 'gone-with-audit'

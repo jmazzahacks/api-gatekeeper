@@ -6,10 +6,14 @@ The frontend console calls these; nginx does NOT proxy them as auth_request
 subrequests (they're first-class API endpoints, not authz decisions).
 """
 import logging
+import secrets
 import time
 
+import psycopg2
 from api_gatekeeper_models import (
     AuthType,
+    Client,
+    ClientStatus,
     ClientSummary,
     HttpMethod,
     MethodAuth,
@@ -23,6 +27,17 @@ from src.auth import require_console_admin
 logger = logging.getLogger(__name__)
 
 admin_bp = Blueprint('admin', __name__, url_prefix='/api/admin')
+
+_SECRET_BYTES = 32  # secrets.token_urlsafe(32) -> ~43 char base64url string
+
+
+def _admin_log_extra() -> dict:
+    """Build the admin-identity fields for an audit log line."""
+    admin = getattr(g, 'console_admin', None)
+    return {
+        'admin_id': admin.admin_id if admin else None,
+        'admin_email': admin.email if admin else None,
+    }
 
 
 def _parse_method_auth(method_str: str, auth_config: object) -> MethodAuth:
@@ -106,15 +121,6 @@ def list_routes():
     return jsonify([route.to_dict() for route in routes]), 200
 
 
-def _admin_log_extra() -> dict:
-    """Build the admin-identity fields for an audit log line."""
-    admin = getattr(g, 'console_admin', None)
-    return {
-        'admin_id': admin.admin_id if admin else None,
-        'admin_email': admin.email if admin else None,
-    }
-
-
 @admin_bp.route('/routes', methods=['POST'])
 @require_console_admin
 def create_route():
@@ -188,6 +194,78 @@ def delete_route(route_id: str):
     return '', 204
 
 
+def _resolve_credential(name: str, spec: object) -> str | None:
+    """Resolve one credential spec from the create-client payload.
+
+    Accepts: None (omit), {'generate': True} (server-side generate), or
+    {'value': '<string>'} (use as-is). Anything else raises ValueError.
+    """
+    if spec is None:
+        return None
+    if not isinstance(spec, dict):
+        raise ValueError(f'{name} must be null, {{"generate": true}}, or {{"value": "..."}}')
+
+    if spec.get('generate') is True:
+        if 'value' in spec:
+            raise ValueError(f'{name} cannot specify both "generate" and "value"')
+        return secrets.token_urlsafe(_SECRET_BYTES)
+
+    value = spec.get('value')
+    if isinstance(value, str) and value:
+        return value
+
+    raise ValueError(f'{name} must be null, {{"generate": true}}, or {{"value": "..."}}')
+
+
+def _parse_client_create_payload(body: object) -> Client:
+    """Validate a POST /api/admin/clients body and return an unsaved Client."""
+    if not isinstance(body, dict):
+        raise ValueError('request body must be a JSON object')
+
+    client_name = body.get('client_name')
+    if not isinstance(client_name, str) or not client_name.strip():
+        raise ValueError('client_name is required')
+
+    api_key = _resolve_credential('api_key', body.get('api_key'))
+    shared_secret = _resolve_credential('shared_secret', body.get('shared_secret'))
+
+    if api_key is None and shared_secret is None:
+        raise ValueError('at least one of api_key or shared_secret must be provided')
+
+    raw_status = body.get('status', 'active')
+    try:
+        status = ClientStatus(raw_status)
+    except ValueError:
+        raise ValueError('status must be one of active, suspended, revoked')
+
+    return Client.create_new(
+        client_name=client_name.strip(),
+        api_key=api_key,
+        shared_secret=shared_secret,
+        status=status,
+    )
+
+
+def _parse_client_update_payload(body: object) -> tuple[str, ClientStatus]:
+    """Validate a PUT /api/admin/clients/<id> body. Returns (name, status)."""
+    if not isinstance(body, dict):
+        raise ValueError('request body must be a JSON object')
+
+    client_name = body.get('client_name')
+    if not isinstance(client_name, str) or not client_name.strip():
+        raise ValueError('client_name is required')
+
+    raw_status = body.get('status')
+    if raw_status is None:
+        raise ValueError('status is required')
+    try:
+        status = ClientStatus(raw_status)
+    except ValueError:
+        raise ValueError('status must be one of active, suspended, revoked')
+
+    return client_name.strip(), status
+
+
 @admin_bp.route('/clients', methods=['GET'])
 @require_console_admin
 def list_clients():
@@ -199,6 +277,96 @@ def list_clients():
     db = current_app.config['DB']
     clients = db.load_all_clients()
     return jsonify([ClientSummary.from_client(c).to_dict() for c in clients]), 200
+
+
+@admin_bp.route('/clients', methods=['POST'])
+@require_console_admin
+def create_client():
+    """Create a new client. Returns the full Client (with raw secrets) ONCE.
+
+    The browser is responsible for surfacing the secrets to the user
+    immediately and warning them they cannot be retrieved later.
+    """
+    body = request.get_json(silent=True) or {}
+    try:
+        client = _parse_client_create_payload(body)
+    except ValueError as e:
+        return jsonify({'error': 'invalid_request', 'message': str(e)}), 400
+
+    db = current_app.config['DB']
+    try:
+        db.save_client(client)
+    except psycopg2.IntegrityError as e:
+        # Schema enforces UNIQUE on api_key and shared_secret. A duplicate
+        # custom value collides here; auto-generated values won't.
+        constraint = getattr(e.diag, 'constraint_name', '') or ''
+        if 'api_key' in constraint:
+            field = 'api_key'
+        elif 'shared_secret' in constraint:
+            field = 'shared_secret'
+        else:
+            field = 'credential'
+        return jsonify({
+            'error': 'conflict',
+            'message': f'a client with that {field} already exists',
+        }), 409
+    logger.info("Client created", extra={
+        **_admin_log_extra(),
+        'client_id': client.client_id,
+        'client_name': client.client_name,
+        'has_api_key': client.api_key is not None,
+        'has_shared_secret': client.shared_secret is not None,
+        'status': client.status.value,
+    })
+    # Return the raw client (one-time secret exposure). Subsequent reads use
+    # the redacted ClientSummary projection.
+    return jsonify(client.to_dict()), 201
+
+
+@admin_bp.route('/clients/<client_id>', methods=['PUT'])
+@require_console_admin
+def update_client(client_id: str):
+    """Rename a client and/or change its status. Secrets are immutable here."""
+    db = current_app.config['DB']
+    existing = db.load_client_by_id(client_id)
+    if existing is None:
+        return jsonify({'error': 'not_found', 'message': 'client not found'}), 404
+
+    body = request.get_json(silent=True) or {}
+    try:
+        new_name, new_status = _parse_client_update_payload(body)
+    except ValueError as e:
+        return jsonify({'error': 'invalid_request', 'message': str(e)}), 400
+
+    existing.client_name = new_name
+    existing.status = new_status
+    existing.updated_at = int(time.time())
+    db.save_client(existing)
+    logger.info("Client updated", extra={
+        **_admin_log_extra(),
+        'client_id': existing.client_id,
+        'client_name': existing.client_name,
+        'status': existing.status.value,
+    })
+    return jsonify(ClientSummary.from_client(existing).to_dict()), 200
+
+
+@admin_bp.route('/clients/<client_id>', methods=['DELETE'])
+@require_console_admin
+def delete_client(client_id: str):
+    """Delete a client. Cascade-removes its permissions."""
+    db = current_app.config['DB']
+    existing = db.load_client_by_id(client_id)
+    if existing is None:
+        return jsonify({'error': 'not_found', 'message': 'client not found'}), 404
+
+    db.delete_client(client_id)
+    logger.info("Client deleted", extra={
+        **_admin_log_extra(),
+        'client_id': existing.client_id,
+        'client_name': existing.client_name,
+    })
+    return '', 204
 
 
 @admin_bp.route('/permissions', methods=['GET'])
