@@ -19,6 +19,8 @@ from api_gatekeeper_models import (
     HttpMethod,
     MethodAuth,
     PermissionSummary,
+    RateLimit,
+    RateLimitSummary,
     Route,
 )
 from flask import Blueprint, current_app, g, jsonify, request
@@ -535,5 +537,106 @@ def delete_permission(permission_id: str):
         'client_name': client.client_name if client else None,
         'route_id': existing.route_id,
         'route_pattern': route.route_pattern if route else None,
+    })
+    return '', 204
+
+
+def _parse_rate_limit_payload(body: object) -> int:
+    """Validate a PUT /api/admin/rate-limits/<client_id> body. Returns requests_per_day."""
+    if not isinstance(body, dict):
+        raise ValueError('request body must be a JSON object')
+
+    raw = body.get('requests_per_day')
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        raise ValueError('requests_per_day must be a positive integer')
+    if raw <= 0:
+        raise ValueError('requests_per_day must be a positive integer')
+    return raw
+
+
+@admin_bp.route('/rate-limits', methods=['GET'])
+@require_console_admin
+def list_rate_limits():
+    """List all rate limits, joined with client_name for the console table.
+
+    Clients without a configured rate limit are NOT included; the absence of
+    a row means "no per-client limit" (a global default may still apply).
+    """
+    db = current_app.config['DB']
+    limits = db.load_all_rate_limits()
+    clients_by_id = {c.client_id: c for c in db.load_all_clients()}
+
+    rows = []
+    for limit in limits:
+        client = clients_by_id.get(limit.client_id)
+        if client is None:
+            # Orphaned row (client deleted without cascade). Skip rather than
+            # surface a half-populated entry that the console can't act on.
+            continue
+        rows.append(RateLimitSummary.from_join(limit, client).to_dict())
+    return jsonify(rows), 200
+
+
+@admin_bp.route('/rate-limits/<client_id>', methods=['PUT'])
+@require_console_admin
+def set_rate_limit(client_id: str):
+    """Upsert a rate limit for a client.
+
+    Idempotent — first call creates (201), subsequent calls update (200).
+    Returns 400 if client_id is unknown.
+    """
+    db = current_app.config['DB']
+    client = db.load_client_by_id(client_id)
+    if client is None:
+        return jsonify({'error': 'invalid_request', 'message': 'client_id not found'}), 400
+
+    body = request.get_json(silent=True) or {}
+    try:
+        requests_per_day = _parse_rate_limit_payload(body)
+    except ValueError as e:
+        return jsonify({'error': 'invalid_request', 'message': str(e)}), 400
+
+    existing = db.load_rate_limit_by_client(client_id)
+    now = int(time.time())
+    if existing is None:
+        rate_limit = RateLimit.create_new(
+            client_id=client_id,
+            requests_per_day=requests_per_day,
+        )
+        status_code = 201
+        action = 'Rate limit set'
+    else:
+        existing.requests_per_day = requests_per_day
+        existing.updated_at = now
+        rate_limit = existing
+        status_code = 200
+        action = 'Rate limit updated'
+
+    db.save_rate_limit(rate_limit)
+    logger.info(action, extra={
+        **_admin_log_extra(),
+        'client_id': client_id,
+        'client_name': client.client_name,
+        'requests_per_day': requests_per_day,
+    })
+    return jsonify(RateLimitSummary.from_join(rate_limit, client).to_dict()), status_code
+
+
+@admin_bp.route('/rate-limits/<client_id>', methods=['DELETE'])
+@require_console_admin
+def delete_rate_limit(client_id: str):
+    """Remove a client's per-client rate limit. 404 if no limit was set."""
+    db = current_app.config['DB']
+    existing = db.load_rate_limit_by_client(client_id)
+    if existing is None:
+        return jsonify({'error': 'not_found', 'message': 'rate limit not found'}), 404
+
+    client = db.load_client_by_id(client_id)
+    db.delete_rate_limit(client_id)
+    logger.info("Rate limit removed", extra={
+        **_admin_log_extra(),
+        'client_id': client_id,
+        'client_name': client.client_name if client else None,
+        'requests_per_day': existing.requests_per_day,
     })
     return '', 204
