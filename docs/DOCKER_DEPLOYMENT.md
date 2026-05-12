@@ -378,6 +378,42 @@ python scripts/show_client.py
 | `REDIS_DB` | No | `0` | Redis database number |
 | `LOG_LEVEL` | No | `INFO` | Log verbosity (DEBUG, INFO, WARNING, ERROR) |
 | `DEBUG_LOCAL` | No | `true` | `true` for console logs, `false` for Loki |
+| `PROMETHEUS_MULTIPROC_DIR` | No | `/tmp/prometheus_multiproc` | Pre-set in the official image. Override only if you need shards in a different location (e.g. tmpfs volume). Required for correct metrics under multi-worker gunicorn — see [Prometheus multi-worker metrics](#prometheus-multi-worker-metrics). |
+
+## Prometheus Multi-Worker Metrics
+
+The gatekeeper image runs gunicorn with 4 workers by default. Each gunicorn worker is a separate Python process with its own in-memory `prometheus_client` counters. A `/metrics` scrape only reaches **one** worker per call (whichever the load balancer routes it to), so consecutive scrapes return that worker's private counts — not a system-wide total.
+
+PromQL `rate()` interprets every drop between scrapes as a counter reset and adds the new value as fresh "increase". The result is a phantom request rate that pins ratio-based alerts (e.g. "denied / total > 5%") above their thresholds even when the service is idle.
+
+### Fix: multiprocess mode
+
+The image enables `prometheus_client`'s multiprocess collector by:
+
+1. Setting `PROMETHEUS_MULTIPROC_DIR=/tmp/prometheus_multiproc` so each worker writes its counter shards to a shared directory.
+2. Clearing that directory on container start (in the `CMD` entrypoint) so stale shards from a previous run aren't re-read as live data.
+3. Loading `gunicorn_conf.py`, which registers a `child_exit` hook that runs `prometheus_client.multiprocess.mark_process_dead(worker.pid)` whenever a worker dies — without this, the shard files of dead workers would be re-read forever and inflate counts.
+4. Declaring `DB_CONNECTION_POOL` with `multiprocess_mode='livesum'` so the gauge aggregates sensibly across workers.
+
+`/metrics` reads from the shared shard directory via `MultiProcessCollector` so every scrape returns a system-wide total. Counters become monotonically non-decreasing across scrapes and `rate()` returns the real request rate.
+
+### Verifying multiproc mode is active
+
+After deploying, scrape `/metrics` twice in quick succession and look at any counter (e.g. `auth_requests_total`):
+
+- **Correct (multiproc on)**: the value is the same or larger on the second scrape. Never smaller.
+- **Broken (multiproc off)**: the value bounces — sometimes the second scrape returns a smaller number than the first. This is the symptom of per-worker counters being exposed un-aggregated.
+
+You can also confirm the env var is set inside the running container:
+
+```bash
+docker exec api-gatekeeper printenv PROMETHEUS_MULTIPROC_DIR
+# Should print: /tmp/prometheus_multiproc
+```
+
+### When you need to override
+
+The default works for the stock image. Override `PROMETHEUS_MULTIPROC_DIR` only if you mount a tmpfs volume there for performance, or if you need to move shards out of `/tmp` for security policy reasons. If you set this outside Docker (bare metal gunicorn), you must also clear the directory on each startup yourself.
 
 ## Common Pitfalls & Troubleshooting
 
@@ -449,6 +485,14 @@ This ensures `$remote_addr` (which reflects the real client IP after `set_real_i
 **Cause**: The database isn't ready when gatekeeper starts, or the database/user hasn't been created.
 
 **Fix**: Use `depends_on` with `condition: service_healthy` and ensure postgres has a healthcheck. Also verify the database and user exist (see [Database Initialization](#database-initialization)).
+
+### Phantom request rate / counter resets in Prometheus
+
+**Symptom**: PromQL `rate(auth_requests_total[5m])` reports non-zero traffic even when the service is idle, or alerts pinned to ratios (denied/total) stay firing despite no real denials in the application logs. `process_start_time_seconds` returns multiple distinct values across consecutive scrapes.
+
+**Cause**: `prometheus_client` is running in single-process mode under a multi-worker gunicorn. Each scrape hits one random worker, exposing only that worker's private counters, and PromQL treats every drop as a counter reset.
+
+**Fix**: Ensure `PROMETHEUS_MULTIPROC_DIR` is set in the container (the official image sets it automatically). See [Prometheus multi-worker metrics](#prometheus-multi-worker-metrics) for how to verify. If you're running a custom image or bare-metal gunicorn, you must set this env var, pre-create the directory, clear stale shards on startup, and run gunicorn with `-c gunicorn_conf.py` to register the `child_exit` hook.
 
 ### Redis connection errors
 

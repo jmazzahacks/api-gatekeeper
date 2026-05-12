@@ -4,7 +4,12 @@ Monitoring and observability configuration.
 Provides Prometheus metrics and structured logging for the auth service.
 """
 
-from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
+import os
+
+from prometheus_client import (
+    Counter, Histogram, Gauge, CollectorRegistry,
+    generate_latest, multiprocess, CONTENT_TYPE_LATEST,
+)
 import time
 from functools import wraps
 from typing import Callable
@@ -30,10 +35,15 @@ AUTH_ERRORS_TOTAL = Counter(
     ['error_type']
 )
 
+# multiprocess_mode='livesum' aggregates per-worker gauge values into a sum
+# across live workers when PROMETHEUS_MULTIPROC_DIR is set. Without it, the
+# default mode would report each worker's value separately, making
+# pool-size reporting nonsensical under multi-worker gunicorn.
 DB_CONNECTION_POOL = Gauge(
     'db_connection_pool_connections',
     'Database connection pool status',
-    ['state']
+    ['state'],
+    multiprocess_mode='livesum'
 )
 
 
@@ -97,7 +107,17 @@ def get_metrics():
     """
     Generate Prometheus metrics in exposition format.
 
+    When PROMETHEUS_MULTIPROC_DIR is set (multi-worker gunicorn), aggregates
+    counters/histograms across all worker processes via MultiProcessCollector.
+    Without this, each scrape would hit one random worker and return only that
+    worker's private counts — making rate() see phantom resets and produce
+    artificially inflated rates. See docs/DOCKER_DEPLOYMENT.md.
+
     Returns:
         Tuple of (metrics_data, content_type)
     """
+    if os.environ.get('PROMETHEUS_MULTIPROC_DIR'):
+        registry = CollectorRegistry()
+        multiprocess.MultiProcessCollector(registry)
+        return generate_latest(registry), CONTENT_TYPE_LATEST
     return generate_latest(), CONTENT_TYPE_LATEST
