@@ -675,6 +675,18 @@ class AuthServiceDB:
             )
             return cursor.rowcount > 0
 
+    def load_all_admins(self) -> List[ConsoleAdmin]:
+        """
+        Load all console admins from the database.
+
+        Returns:
+            List of all ConsoleAdmin objects, ordered by email
+        """
+        with self.get_cursor(commit=False, cursor_factory=RealDictCursor) as cursor:
+            cursor.execute("SELECT * FROM console_admins ORDER BY email")
+            results = cursor.fetchall()
+            return [ConsoleAdmin.from_dict(dict(row)) for row in results]
+
     def get_admin_by_aegis_id(self, aegis_user_id: int) -> Optional[ConsoleAdmin]:
         """
         Look up a console admin by their Aegis user ID.
