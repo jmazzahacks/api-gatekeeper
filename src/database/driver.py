@@ -2,15 +2,34 @@
 Database driver for API Authentication Service.
 Provides connection pooling and database operations for routes, clients, and permissions.
 """
-from typing import Optional, List
+from typing import Optional, List, Iterator
 from contextlib import contextmanager
 import json
+import logging
 import psycopg2
+from psycopg2.extensions import connection as PgConnection
 from psycopg2.pool import ThreadedConnectionPool
 from psycopg2.extras import RealDictCursor
 
 from api_gatekeeper_models import Route, Client, ClientPermission, RateLimit, ConsoleAdmin
 from ..monitoring import DB_CONNECTION_POOL
+
+
+logger = logging.getLogger(__name__)
+
+
+# Exception classes that MIGHT mean the socket is dead. OperationalError is
+# also raised by app-level failures on perfectly healthy conns
+# (SerializationFailure, DeadlockDetected, QueryCanceled, LockNotAvailable
+# all subclass OperationalError), so membership in this tuple alone is NOT
+# enough to decide — `_is_dead_conn_error` checks `conn.closed` to
+# disambiguate.
+_DEAD_CONN_ERRORS = (psycopg2.OperationalError, psycopg2.InterfaceError)
+
+# How many times to retry checkout when pre-ping fails. Enough to drain
+# a pool full of corpses after Postgres restarts; not so high that we
+# spin forever if Postgres is genuinely down.
+MAX_HEALTH_RETRIES = 3
 
 
 class AuthServiceDB:
@@ -45,7 +64,13 @@ class AuthServiceDB:
             port=db_port,
             database=db_name,
             user=db_user,
-            password=db_password
+            password=db_password,
+            # TCP keepalives — let the OS detect a silently dropped conn
+            # within ~80s instead of "until next reboot."
+            keepalives=1,
+            keepalives_idle=30,
+            keepalives_interval=10,
+            keepalives_count=5,
         )
         self._active_connections = 0
         self._max_conn = max_conn
@@ -55,25 +80,143 @@ class AuthServiceDB:
         DB_CONNECTION_POOL.labels(state='idle').set(min_conn)
         DB_CONNECTION_POOL.labels(state='max').set(max_conn)
 
-    @contextmanager
-    def _get_connection(self):
-        """Context manager for getting a connection from the pool."""
-        conn = self.pool.getconn()
-        self._active_connections += 1
-        DB_CONNECTION_POOL.labels(state='active').set(self._active_connections)
-        DB_CONNECTION_POOL.labels(state='idle').set(self._max_conn - self._active_connections)
+    @staticmethod
+    def _is_dead_conn_error(conn: Optional[PgConnection], exc: BaseException) -> bool:
+        """
+        True if `exc` indicates the underlying socket is unusable.
+
+        InterfaceError always means the conn is dead. OperationalError is
+        shared between true dead-conn cases and app-level failures on
+        healthy conns (SerializationFailure, DeadlockDetected,
+        QueryCanceled, LockNotAvailable all subclass OperationalError) —
+        psycopg2 sets `conn.closed` to non-zero only when the socket is
+        actually broken, so that's the reliable signal. If conn is None
+        (e.g., getconn itself raised), assume dead.
+        """
+        if isinstance(exc, psycopg2.InterfaceError):
+            return True
+        if isinstance(exc, psycopg2.OperationalError):
+            return conn is None or getattr(conn, 'closed', 0) != 0
+        return False
+
+    def _record_pool_metrics(self) -> None:
+        """Update active/idle pool gauges. Swallows metric backend errors."""
         try:
-            yield conn
-        finally:
-            self.pool.putconn(conn)
-            self._active_connections -= 1
             DB_CONNECTION_POOL.labels(state='active').set(self._active_connections)
-            DB_CONNECTION_POOL.labels(state='idle').set(self._max_conn - self._active_connections)
+            DB_CONNECTION_POOL.labels(state='idle').set(
+                self._max_conn - self._active_connections
+            )
+        except Exception:
+            logger.exception("Failed to update DB pool metrics")
+
+    def _safe_putback(self, conn: Optional[PgConnection], close: bool = False) -> None:
+        """
+        Return conn to the pool. On putback failure, force-close the conn
+        so it doesn't leak. No-op if conn is None.
+        """
+        if conn is None:
+            return
+        try:
+            self.pool.putconn(conn, close=close)
+        except Exception:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    @staticmethod
+    def _check_alive(conn: PgConnection) -> None:
+        """Cheap `SELECT 1` pre-ping. Raises on dead conn."""
+        cur = conn.cursor()
+        try:
+            cur.execute("SELECT 1")
+            cur.fetchone()
+        finally:
+            cur.close()
+        # Reset transaction state so the caller gets a clean slate.
+        conn.rollback()
+
+    def _checkout_healthy(self) -> PgConnection:
+        """
+        Get a pre-pinged, healthy conn from the pool.
+
+        On dead conn, discards (putconn close=True so pool refills) and
+        retries up to MAX_HEALTH_RETRIES times. On retry exhaustion,
+        raises RuntimeError chained from the last underlying error.
+        Non-dead exceptions during checkout (e.g., PoolError) propagate
+        without retry.
+        """
+        last_err: Optional[BaseException] = None
+        for attempt in range(MAX_HEALTH_RETRIES):
+            conn: Optional[PgConnection] = None
+            try:
+                conn = self.pool.getconn()
+                self._check_alive(conn)
+                return conn
+            except _DEAD_CONN_ERRORS as e:
+                last_err = e
+                self._safe_putback(conn, close=True)
+                logger.warning(
+                    "DB checkout pre-ping failed (attempt %d/%d): %s",
+                    attempt + 1, MAX_HEALTH_RETRIES, e,
+                )
+                continue
+            except BaseException:
+                self._safe_putback(conn, close=True)
+                raise
+
+        raise RuntimeError(
+            f"Could not acquire a healthy DB connection after "
+            f"{MAX_HEALTH_RETRIES} attempts"
+        ) from last_err
 
     @contextmanager
-    def get_cursor(self, commit: bool = True, cursor_factory=None):
+    def _get_connection(self) -> Iterator[PgConnection]:
+        """
+        Yield a healthy pooled connection.
+
+        On exception inside the yielded block, distinguishes between:
+          - dead conn (rollback fails OR conn.closed is set) — discard
+            with putconn(close=True) so the pool refills
+          - app-level error on a healthy conn (SerializationFailure,
+            DeadlockDetected, ValueError, etc.) — rollback, recycle the
+            conn with plain putconn so pooling is preserved
+        """
+        conn = self._checkout_healthy()
+        self._active_connections += 1
+        self._record_pool_metrics()
+        try:
+            try:
+                yield conn
+            except BaseException:
+                # A successful rollback proves the socket is alive;
+                # a failed rollback or `conn.closed` set means it's gone.
+                conn_dead = False
+                try:
+                    conn.rollback()
+                except _DEAD_CONN_ERRORS:
+                    conn_dead = True
+                if not conn_dead:
+                    conn_dead = getattr(conn, 'closed', 0) != 0
+                self._safe_putback(conn, close=conn_dead)
+                raise
+            else:
+                self._safe_putback(conn, close=False)
+        finally:
+            self._active_connections -= 1
+            self._record_pool_metrics()
+
+    @contextmanager
+    def get_cursor(
+        self, commit: bool = True, cursor_factory: Optional[type] = None
+    ) -> Iterator[psycopg2.extensions.cursor]:
         """
         Context manager for database cursors with automatic commit/rollback.
+
+        Transaction rollback on exception is handled by `_get_connection`;
+        this layer is responsible only for the cursor lifecycle and the
+        optional commit. cursor.close() in finally suppresses dead-conn
+        errors so the caller sees the original exception, not a follow-on.
 
         Args:
             commit: Whether to commit on success
@@ -88,11 +231,11 @@ class AuthServiceDB:
                 yield cursor
                 if commit:
                     conn.commit()
-            except Exception:
-                conn.rollback()
-                raise
             finally:
-                cursor.close()
+                try:
+                    cursor.close()
+                except _DEAD_CONN_ERRORS:
+                    pass
 
     def load_route_by_id(self, route_id: str) -> Optional[Route]:
         """
