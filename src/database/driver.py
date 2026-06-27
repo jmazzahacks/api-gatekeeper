@@ -26,9 +26,15 @@ logger = logging.getLogger(__name__)
 # disambiguate.
 _DEAD_CONN_ERRORS = (psycopg2.OperationalError, psycopg2.InterfaceError)
 
-# How many times to retry checkout when pre-ping fails. Enough to drain
-# a pool full of corpses after Postgres restarts; not so high that we
-# spin forever if Postgres is genuinely down.
+# How many times to retry checkout when pre-ping fails.
+#
+# Bounded intentionally low to fail fast when Postgres is genuinely
+# down (each attempt pays ~1× connect_timeout). The tradeoff: after a
+# Postgres restart with a full pool of dead idle conns, the first
+# ~ceil(max_conn / MAX_HEALTH_RETRIES) callers will raise RuntimeError
+# while corpses are drained before fresh conns get created. With the
+# default max_conn=10 that's roughly the first 4 callers post-restart.
+# Acceptable for our request volume; revisit if observed in practice.
 MAX_HEALTH_RETRIES = 3
 
 
@@ -119,10 +125,11 @@ class AuthServiceDB:
         try:
             self.pool.putconn(conn, close=close)
         except Exception:
+            logger.exception("DB pool putconn failed; force-closing conn")
             try:
                 conn.close()
             except Exception:
-                pass
+                logger.exception("Force-close of orphaned DB conn also failed")
 
     @staticmethod
     def _check_alive(conn: PgConnection) -> None:
@@ -132,7 +139,10 @@ class AuthServiceDB:
             cur.execute("SELECT 1")
             cur.fetchone()
         finally:
-            cur.close()
+            try:
+                cur.close()
+            except Exception:
+                logger.exception("DB cursor close failed during pre-ping cleanup")
         # Reset transaction state so the caller gets a clean slate.
         conn.rollback()
 
@@ -196,12 +206,28 @@ class AuthServiceDB:
                     conn.rollback()
                 except _DEAD_CONN_ERRORS:
                     conn_dead = True
+                except Exception:
+                    # Rollback failed for an unexpected reason (not in
+                    # _DEAD_CONN_ERRORS). Transaction state is now
+                    # unknown — possibly with the caller's writes still
+                    # pending — so discard with close=True. Without this
+                    # arm the conn would leak out of the pool AND the
+                    # rollback exception would mask the caller's.
+                    # Narrowed to Exception (not BaseException) so
+                    # KeyboardInterrupt / SystemExit propagate.
+                    logger.exception(
+                        "Unexpected DB rollback failure during mid-flight cleanup"
+                    )
+                    conn_dead = True
                 if not conn_dead:
                     conn_dead = getattr(conn, 'closed', 0) != 0
                 self._safe_putback(conn, close=conn_dead)
                 raise
             else:
-                self._safe_putback(conn, close=False)
+                # Symmetric with the exception path: if caller misused the
+                # conn handle and closed it directly, discard rather than
+                # recycle a corpse.
+                self._safe_putback(conn, close=getattr(conn, 'closed', 0) != 0)
         finally:
             self._active_connections -= 1
             self._record_pool_metrics()
@@ -215,8 +241,8 @@ class AuthServiceDB:
 
         Transaction rollback on exception is handled by `_get_connection`;
         this layer is responsible only for the cursor lifecycle and the
-        optional commit. cursor.close() in finally suppresses dead-conn
-        errors so the caller sees the original exception, not a follow-on.
+        optional commit. cursor.close() in finally is best-effort so the
+        caller sees the original exception, not a follow-on cleanup error.
 
         Args:
             commit: Whether to commit on success
@@ -234,8 +260,10 @@ class AuthServiceDB:
             finally:
                 try:
                     cursor.close()
-                except _DEAD_CONN_ERRORS:
-                    pass
+                except Exception:
+                    logger.exception(
+                        "DB cursor close failed in get_cursor cleanup"
+                    )
 
     def load_route_by_id(self, route_id: str) -> Optional[Route]:
         """

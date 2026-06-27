@@ -208,6 +208,30 @@ def test_value_error_on_silently_dead_conn_discards() -> None:
     assert db._active_connections == 0
 
 
+def test_unexpected_rollback_failure_discards_and_preserves_caller_exc() -> None:
+    """
+    Rollback raises a non-_DEAD_CONN_ERRORS exception (RuntimeError, etc.):
+    - Conn MUST be discarded with close=True (no pool slot leak)
+    - Caller's original exception MUST propagate (not the rollback failure)
+
+    This is the bug the postgres-setup v1.18.5 fix addresses: without the
+    inner `except BaseException` arm around rollback, the unexpected error
+    escapes the mid-flight handler, _safe_putback never runs (slot leaks),
+    and the caller sees the rollback exception instead of their own.
+    """
+    alive = _alive_conn()
+    db = _make_db_with_mocked_pool([alive])
+
+    with pytest.raises(ValueError) as excinfo:
+        with db._get_connection() as conn:
+            conn.rollback.side_effect = RuntimeError("unexpected rollback failure")
+            raise ValueError("app error mid-transaction")
+
+    assert "app error mid-transaction" in str(excinfo.value)
+    db.pool.putconn.assert_called_once_with(alive, close=True)
+    assert db._active_connections == 0
+
+
 # ----- Non-dead exceptions during checkout -----
 
 
@@ -283,3 +307,110 @@ def test_is_dead_conn_error_unrelated_exception_is_not_dead() -> None:
 
 def test_is_dead_conn_error_none_conn_assumes_dead() -> None:
     assert AuthServiceDB._is_dead_conn_error(None, psycopg2.OperationalError("getconn failed"))
+
+
+# ----- get_cursor cleanup is best-effort -----
+
+
+def test_get_cursor_close_failure_does_not_mask_caller_exception() -> None:
+    """
+    cursor.close() in get_cursor's finally must be best-effort: if it
+    raises ANY exception (not just _DEAD_CONN_ERRORS), the caller's
+    original exception must survive. Pre-fix this only caught
+    _DEAD_CONN_ERRORS, so a stray RuntimeError from cursor.close would
+    replace the caller's exception.
+    """
+    alive = _alive_conn()
+    alive.cursor.return_value.close.side_effect = RuntimeError("cursor close failed")
+    db = _make_db_with_mocked_pool([alive])
+
+    with pytest.raises(ValueError) as excinfo:
+        with db.get_cursor() as cursor:
+            raise ValueError("caller error")
+
+    assert "caller error" in str(excinfo.value)
+
+
+def test_check_alive_cursor_close_failure_still_rolls_back() -> None:
+    """
+    _check_alive's cur.close() in finally must be best-effort: if it
+    raises, conn.rollback() at the end MUST still run so the conn doesn't
+    re-enter the pool with stale transaction state.
+    """
+    alive = _alive_conn()
+    alive.cursor.return_value.close.side_effect = RuntimeError("cursor close failed")
+
+    AuthServiceDB._check_alive(alive)
+
+    alive.cursor.return_value.close.assert_called()
+    alive.rollback.assert_called()
+
+
+# ----- get_cursor success path with cursor close failure -----
+
+
+def test_get_cursor_success_path_close_failure_does_not_break_caller() -> None:
+    """
+    Success path: caller doesn't raise, commit succeeds, but cursor.close()
+    in finally raises a non-DB error. The exception must be swallowed so
+    successful queries don't 500 on cleanup anomalies. Guards against a
+    future refactor narrowing the catch back to _DEAD_CONN_ERRORS — the
+    error-path test alone can't detect that regression.
+    """
+    alive = _alive_conn()
+    alive.cursor.return_value.close.side_effect = RuntimeError("cursor close failed")
+    db = _make_db_with_mocked_pool([alive])
+
+    with db.get_cursor() as cursor:
+        pass
+
+    alive.commit.assert_called_once()
+    alive.cursor.return_value.close.assert_called()
+    db.pool.putconn.assert_called_once_with(alive, close=False)
+    assert db._active_connections == 0
+
+
+# ----- F1: signal propagation through inner rollback handler -----
+
+
+def test_keyboard_interrupt_during_rollback_propagates_not_swallowed() -> None:
+    """
+    The inner except arm around conn.rollback() must be `except Exception:`
+    (not `except BaseException:`) so signals propagate. Pre-F1-fix, a
+    KeyboardInterrupt during rollback was silently absorbed and the
+    caller's exception was re-raised instead — Ctrl-C vanished.
+
+    This test proves the inner arm narrowed correctly: KeyboardInterrupt
+    raised during rollback escapes out of the context manager (replacing
+    the caller's exception, which is the normal Python `raise X; raise Y`
+    behavior — Y wins).
+    """
+    alive = _alive_conn()
+    alive.rollback.side_effect = KeyboardInterrupt("simulated Ctrl-C during rollback")
+    db = _make_db_with_mocked_pool([alive])
+
+    with pytest.raises(KeyboardInterrupt):
+        with db._get_connection() as conn:
+            raise ValueError("caller error")
+
+    assert db._active_connections == 0
+
+
+# ----- F3: success-path symmetry on silently-closed conn -----
+
+
+def test_success_path_discards_silently_closed_conn() -> None:
+    """
+    If user code closes the conn handle directly inside the with-block
+    (misuse, or a buggy helper that calls conn.close()), the success-path
+    else branch must discard with close=True — mirroring the exception
+    path's conn.closed check. Pre-F3-fix this was asymmetric.
+    """
+    alive = _alive_conn()
+    db = _make_db_with_mocked_pool([alive])
+
+    with db._get_connection() as conn:
+        conn.closed = 2
+
+    db.pool.putconn.assert_called_once_with(alive, close=True)
+    assert db._active_connections == 0
