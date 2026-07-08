@@ -6,6 +6,7 @@ Aegis instance, and exercises the cache + console_admins lookup against the
 real test database.
 """
 import time
+from typing import Optional
 import pytest
 
 from api_gatekeeper_models import ConsoleAdmin
@@ -25,7 +26,11 @@ AEGIS_OTHER_USER_ID = 99
 EMAIL = 'admin@example.com'
 
 
-def _user(user_id: int = AEGIS_USER_ID, email: str = EMAIL) -> User:
+def _user(
+    user_id: int = AEGIS_USER_ID,
+    email: str = EMAIL,
+    uuid: Optional[str] = None,
+) -> User:
     now = int(time.time())
     return User(
         id=user_id,
@@ -35,6 +40,7 @@ def _user(user_id: int = AEGIS_USER_ID, email: str = EMAIL) -> User:
         role=UserRole.USER,
         created_at=now,
         updated_at=now,
+        uuid=uuid,
     )
 
 
@@ -185,6 +191,160 @@ class TestCacheBehavior:
 
         fake_me.pop(BEARER_VALID)
         assert auth.authenticate(BEARER_VALID) is None
+
+
+AEGIS_UUID = 'b8e9dfc0-5ba5-4bbd-a314-cb342eac0f71'
+AEGIS_OTHER_UUID = 'aaaaaaaa-1111-2222-3333-444444444444'
+
+
+class TestUuidFirstLookup:
+    """Aegis phase-1 shim: UUID-first with INT fallback (fail-closed)."""
+
+    def test_uuid_hit_returns_admin(self, clean_db, fake_me):
+        """
+        Provisioned admin found via aegis_uuid, no fallback needed.
+
+        Seeds TWO admins: A with the UUID we look up and a DIFFERENT
+        aegis_user_id from the token, plus B with the token's aegis_user_id
+        and a DIFFERENT aegis_uuid. UUID-first correctly returns A; an
+        INT-first regression would return B. Same-row seeding (as originally
+        written) let both paths pass without distinguishing them.
+        """
+        uuid_target_admin = ConsoleAdmin.create_new(
+            aegis_user_id=AEGIS_OTHER_USER_ID,  # NOT the token's user_id
+            email='uuid-match@example.com',
+            aegis_uuid=AEGIS_UUID,               # matches the token's uuid
+        )
+        int_target_admin = ConsoleAdmin.create_new(
+            aegis_user_id=AEGIS_USER_ID,         # matches the token's user_id
+            email='int-match@example.com',
+            aegis_uuid=AEGIS_OTHER_UUID,         # different uuid from token
+        )
+        assert clean_db.create_admin(uuid_target_admin) is not None
+        assert clean_db.create_admin(int_target_admin) is not None
+
+        fake_me[BEARER_VALID] = _user(uuid=AEGIS_UUID)
+        auth = AegisAuthenticator(AEGIS_URL, clean_db)
+
+        result = auth.authenticate(BEARER_VALID)
+
+        assert result is not None
+        # UUID lookup wins — we get uuid_target_admin, NOT int_target_admin
+        assert result.email == 'uuid-match@example.com'
+        assert result.aegis_user_id == AEGIS_OTHER_USER_ID
+
+    def test_int_fallback_when_uuid_missing_on_row(self, clean_db, fake_me):
+        """
+        Legacy row (aegis_uuid IS NULL) is still reachable via the INT
+        fallback until it gets backfilled. Simulates a shim-window request
+        for an admin that hasn't been backfilled yet.
+        """
+        admin = ConsoleAdmin.create_new(aegis_user_id=AEGIS_USER_ID, email=EMAIL)
+        assert clean_db.create_admin(admin) is not None
+        # /me returns a uuid (Aegis is shim-era) but our DB row is legacy
+        fake_me[BEARER_VALID] = _user(uuid=AEGIS_UUID)
+        auth = AegisAuthenticator(AEGIS_URL, clean_db)
+
+        result = auth.authenticate(BEARER_VALID)
+
+        assert result is not None
+        assert result.aegis_user_id == AEGIS_USER_ID
+        assert result.aegis_uuid is None
+
+    def test_int_fallback_refused_when_row_has_different_uuid(self, clean_db, fake_me):
+        """
+        Fail-closed: if the INT fallback lands on a row whose aegis_uuid is
+        set but DOESN'T match the token's uuid, refuse. This is the guardrail
+        that prevents accidentally minting a session on the wrong identity if
+        Aegis re-maps an integer id post-migration.
+        """
+        admin = ConsoleAdmin.create_new(
+            aegis_user_id=AEGIS_USER_ID,
+            email=EMAIL,
+            aegis_uuid=AEGIS_UUID,
+        )
+        assert clean_db.create_admin(admin) is not None
+        # Token carries INT match but a DIFFERENT uuid
+        fake_me[BEARER_VALID] = _user(uuid=AEGIS_OTHER_UUID)
+        auth = AegisAuthenticator(AEGIS_URL, clean_db)
+
+        assert auth.authenticate(BEARER_VALID) is None
+
+    def test_uuid_absent_falls_through_to_int(self, clean_db, fake_me):
+        """
+        Pre-shim /me responses have user.uuid = None. Behaviour must be the
+        old INT-lookup path unchanged (backwards compat).
+        """
+        admin = ConsoleAdmin.create_new(aegis_user_id=AEGIS_USER_ID, email=EMAIL)
+        assert clean_db.create_admin(admin) is not None
+        fake_me[BEARER_VALID] = _user(uuid=None)
+        auth = AegisAuthenticator(AEGIS_URL, clean_db)
+
+        result = auth.authenticate(BEARER_VALID)
+
+        assert result is not None
+        assert result.aegis_user_id == AEGIS_USER_ID
+
+    def test_backfilled_admin_still_reachable_when_token_lacks_uuid(self, clean_db, fake_me):
+        """
+        Regression: earlier revision refused backfilled admins whenever /me
+        omitted a uuid. The fail-closed guard now requires BOTH sides to
+        carry a uuid before triggering, so an unfortunately-timed pre-shim
+        response can't lock a real admin out.
+        """
+        admin = ConsoleAdmin.create_new(
+            aegis_user_id=AEGIS_USER_ID,
+            email=EMAIL,
+            aegis_uuid=AEGIS_UUID,   # row IS backfilled
+        )
+        assert clean_db.create_admin(admin) is not None
+        fake_me[BEARER_VALID] = _user(uuid=None)  # token has no uuid
+        auth = AegisAuthenticator(AEGIS_URL, clean_db)
+
+        result = auth.authenticate(BEARER_VALID)
+
+        assert result is not None
+        assert result.aegis_user_id == AEGIS_USER_ID
+        assert result.aegis_uuid == AEGIS_UUID
+
+    def test_uppercase_uuid_from_aegis_matches_lowercase_row(self, clean_db, fake_me):
+        """
+        Aegis or a middleware could send an uppercase UUID. The DB stores the
+        Postgres-canonical lowercase form; a case-sensitive compare would
+        refuse the match. The authenticator normalises through uuid.UUID()
+        before comparing.
+        """
+        admin = ConsoleAdmin.create_new(
+            aegis_user_id=AEGIS_USER_ID,
+            email=EMAIL,
+            aegis_uuid=AEGIS_UUID,  # canonical lowercase
+        )
+        assert clean_db.create_admin(admin) is not None
+        fake_me[BEARER_VALID] = _user(uuid=AEGIS_UUID.upper())
+        auth = AegisAuthenticator(AEGIS_URL, clean_db)
+
+        result = auth.authenticate(BEARER_VALID)
+
+        assert result is not None
+
+    def test_malformed_uuid_from_aegis_returns_none_not_500(self, clean_db, fake_me):
+        """
+        A garbled uuid from Aegis (e.g. transient shim bug) must NOT bubble
+        as psycopg2.DataError up through authenticate() — the docstring
+        promises all failures collapse to None. The `_normalize_uuid` helper
+        drops the malformed value BEFORE it reaches the DB query.
+        """
+        admin = ConsoleAdmin.create_new(aegis_user_id=AEGIS_USER_ID, email=EMAIL)
+        assert clean_db.create_admin(admin) is not None
+        fake_me[BEARER_VALID] = _user(uuid='not-a-uuid')
+        auth = AegisAuthenticator(AEGIS_URL, clean_db)
+
+        result = auth.authenticate(BEARER_VALID)
+
+        # Normalisation drops the bad uuid; we fall through to INT lookup and
+        # find the (unbackfilled) admin. No 500.
+        assert result is not None
+        assert result.aegis_user_id == AEGIS_USER_ID
 
 
 class TestConstructor:

@@ -140,6 +140,7 @@ COMMENT ON COLUMN client_permissions.created_at IS 'Unix timestamp (seconds sinc
 CREATE TABLE IF NOT EXISTS console_admins (
     admin_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     aegis_user_id BIGINT NOT NULL,
+    aegis_uuid UUID,
     email TEXT NOT NULL,
     created_at BIGINT NOT NULL DEFAULT extract(epoch from now())::bigint,
     updated_at BIGINT NOT NULL DEFAULT extract(epoch from now())::bigint,
@@ -150,16 +151,28 @@ CREATE TABLE IF NOT EXISTS console_admins (
     CONSTRAINT admin_email_format CHECK (email ~ '^[^@]+@[^@]+\.[^@]+$')
 );
 
+-- Idempotent migration for pre-UUID installs: adds aegis_uuid without needing
+-- a dedicated migration runner. Safe to re-apply.
+ALTER TABLE console_admins ADD COLUMN IF NOT EXISTS aegis_uuid UUID;
+
 -- Index for email lookups during provisioning
 CREATE INDEX IF NOT EXISTS idx_console_admins_email ON console_admins(email);
 
 -- Index for Aegis ID lookups during provisioning
 CREATE INDEX IF NOT EXISTS idx_console_admins_aegis_id ON console_admins(aegis_user_id);
 
+-- Partial unique index for Aegis UUID lookups. Nullable during the int->UUID
+-- shim; uniqueness only applies to populated rows so unbackfilled rows don't
+-- collide as NULL.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_console_admins_aegis_uuid
+    ON console_admins(aegis_uuid)
+    WHERE aegis_uuid IS NOT NULL;
+
 -- Comments for documentation
 COMMENT ON TABLE console_admins IS 'Human administrators provisioned from Aegis user.verified webhooks';
 COMMENT ON COLUMN console_admins.admin_id IS 'Local unique identifier for the console admin';
-COMMENT ON COLUMN console_admins.aegis_user_id IS 'Aegis user_id linking this admin to their Aegis identity';
+COMMENT ON COLUMN console_admins.aegis_user_id IS 'Aegis user_id linking this admin to their Aegis identity (legacy int; kept as fallback during Aegis phase-1 shim, will be dropped after phase-2)';
+COMMENT ON COLUMN console_admins.aegis_uuid IS 'Aegis user UUID (source of truth after phase-2). Nullable during shim; backfilled by scripts/backfill_aegis_uuid.py and by inline webhook writes';
 COMMENT ON COLUMN console_admins.email IS 'Admin email address (unique)';
 COMMENT ON COLUMN console_admins.created_at IS 'Unix timestamp (seconds since epoch) when admin was provisioned';
 COMMENT ON COLUMN console_admins.updated_at IS 'Unix timestamp (seconds since epoch) when admin record was last updated';

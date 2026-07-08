@@ -14,6 +14,7 @@ confirm-email-change) do NOT use this client — the browser calls Aegis
 directly with the user's session bearer for those.
 """
 import os
+import uuid as uuid_mod
 from typing import Optional
 
 from byteforge_aegis_client import AegisClient, AegisClientConfig
@@ -36,14 +37,26 @@ def aegis_api_url() -> str:
     return _required_env('AEGIS_API_URL')
 
 
-def aegis_site_id() -> int:
+def aegis_site_id() -> str:
+    """
+    Return the configured Aegis site identifier as a validated string.
+
+    Accepts either the legacy integer id (as a decimal string) or the UUID
+    string form. The Aegis API accepts both during the int->UUID shim; the
+    client library types this as `Identifier = Union[int, str]`. We validate
+    at the config layer so a typo (e.g. AEGIS_SITE_ID=fivve) fails fast at
+    startup rather than surfacing later as an opaque 4xx from Aegis.
+    """
     raw = _required_env('AEGIS_SITE_ID')
+    if raw.isdigit():
+        return raw
     try:
-        return int(raw)
+        uuid_mod.UUID(raw)
     except ValueError:
         raise RuntimeError(
-            f"AEGIS_SITE_ID must be an integer, got {raw!r}"
+            f"AEGIS_SITE_ID must be a decimal integer or UUID, got {raw!r}"
         )
+    return raw
 
 
 def aegis_tenant_api_key() -> str:

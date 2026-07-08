@@ -17,14 +17,32 @@ bad-token streams.
 import logging
 import threading
 import time
+import uuid as uuid_mod
 from typing import Optional
 
+import psycopg2
 from byteforge_aegis_client import AegisClient, AegisClientConfig, AegisUnauthorized
+from byteforge_aegis_models import User
 
 from api_gatekeeper_models import ConsoleAdmin
 from src.database.driver import AuthServiceDB
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_uuid(value: Optional[str]) -> Optional[str]:
+    """
+    Return the canonical (lowercase, hyphenated) form of a UUID string, or
+    None if the input is None/blank/unparseable. Aegis and Postgres both
+    canonicalise to lowercase — this normaliser keeps our equality compares
+    case- and format-agnostic on both the read and write paths.
+    """
+    if not value or not isinstance(value, str):
+        return None
+    try:
+        return str(uuid_mod.UUID(value))
+    except (ValueError, AttributeError):
+        return None
 
 
 class AegisAuthenticator:
@@ -62,16 +80,12 @@ class AegisAuthenticator:
         if cached is not None:
             return cached
 
-        user_id = self._introspect(bearer_token)
-        if user_id is None:
+        user = self._introspect(bearer_token)
+        if user is None:
             return None
 
-        admin = self._db.get_admin_by_aegis_id(user_id)
+        admin = self._lookup_admin(user.id, _normalize_uuid(user.uuid))
         if admin is None:
-            logger.info(
-                "Authenticated Aegis user is not a provisioned console admin",
-                extra={'aegis_user_id': user_id},
-            )
             return None
 
         self._cache_put(bearer_token, admin)
@@ -86,8 +100,13 @@ class AegisAuthenticator:
     # Internals
     # ------------------------------------------------------------------
 
-    def _introspect(self, bearer_token: str) -> Optional[int]:
-        """Call Aegis /api/auth/me. Returns user_id on success, None on any failure."""
+    def _introspect(self, bearer_token: str) -> Optional[User]:
+        """
+        Call Aegis /api/auth/me and return the User on success, None on any
+        failure. Returning the full User (rather than a tuple of identifiers)
+        keeps both `id` and `uuid` named at call sites and avoids adding a
+        one-off dataclass for the shim window.
+        """
         client = AegisClient(AegisClientConfig(
             api_url=self._aegis_api_url,
             auto_refresh=False,
@@ -95,7 +114,7 @@ class AegisAuthenticator:
         client.set_auth_token(bearer_token)
 
         try:
-            user = client.me()
+            return client.me()
         except AegisUnauthorized:
             return None
         except Exception as exc:
@@ -105,7 +124,71 @@ class AegisAuthenticator:
             )
             return None
 
-        return user.id
+    def _lookup_admin(
+        self, aegis_user_id: int, aegis_uuid: Optional[str]
+    ) -> Optional[ConsoleAdmin]:
+        """
+        Resolve an Aegis identity to a provisioned ConsoleAdmin.
+
+        UUID-first with INT fallback (fail-closed): if aegis_uuid is present,
+        try the UUID lookup first. If that misses, fall back to the legacy
+        integer id — the fail-closed guard only refuses when BOTH sides carry
+        a UUID and they disagree (which can only happen if the row was
+        backfilled with a different identity than what Aegis just handed us).
+        If the token has no UUID (pre-shim server) or the row hasn't been
+        backfilled yet, the INT match is accepted.
+
+        `aegis_uuid` is expected to be pre-normalised (lowercase canonical
+        form) by `_normalize_uuid` so the equality compare is case-insensitive
+        and Postgres round-trips are consistent.
+
+        After the backfill script runs and phase-2 lands, all rows will have
+        aegis_uuid populated and the INT fallback becomes dead code — safe to
+        remove once we drop the aegis_user_id column.
+        """
+        if aegis_uuid:
+            try:
+                admin = self._db.get_admin_by_aegis_uuid(aegis_uuid)
+            except psycopg2.DataError:
+                logger.info(
+                    "Aegis /me returned an unparseable uuid; treating as unauthenticated",
+                    extra={
+                        'aegis_user_id': aegis_user_id,
+                        'aegis_uuid': aegis_uuid,
+                    },
+                )
+                return None
+            if admin is not None:
+                return admin
+
+        admin = self._db.get_admin_by_aegis_id(aegis_user_id)
+        if admin is None:
+            logger.info(
+                "Authenticated Aegis user is not a provisioned console admin",
+                extra={'aegis_user_id': aegis_user_id, 'aegis_uuid': aegis_uuid},
+            )
+            return None
+
+        # Fail-closed: only refuse when both sides carry a UUID and they
+        # disagree. `admin.aegis_uuid == aegis_uuid` when the row was
+        # backfilled with the same identity Aegis just handed us — accept.
+        if (
+            aegis_uuid is not None
+            and admin.aegis_uuid is not None
+            and admin.aegis_uuid.lower() != aegis_uuid
+        ):
+            logger.warning(
+                "Refusing INT fallback: matched admin has a different aegis_uuid",
+                extra={
+                    'aegis_user_id': aegis_user_id,
+                    'incoming_aegis_uuid': aegis_uuid,
+                    'stored_aegis_uuid': admin.aegis_uuid,
+                    'admin_id': admin.admin_id,
+                },
+            )
+            return None
+
+        return admin
 
     def _cache_get(self, token: str) -> Optional[ConsoleAdmin]:
         if self._cache_ttl <= 0:

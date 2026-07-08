@@ -358,6 +358,222 @@ class TestProvisioning:
         # Exactly one row persisted
         assert db.get_admin_by_aegis_id(42).admin_id == first.admin_id
 
+    def test_creates_new_admin_persists_aegis_uuid(self, webhook_client):
+        """Payload carrying user_uuid must land on the new row's aegis_uuid column."""
+        client, db = webhook_client
+        uuid = 'b8e9dfc0-5ba5-4bbd-a314-cb342eac0f71'
+        headers, body = _build_request(payload={
+            'event_type': 'user.verified',
+            'user_id': 42,
+            'user_uuid': uuid,
+            'email': ALLOWED_EMAIL,
+            'timestamp': int(time.time()),
+        })
+        response = client.post(WEBHOOK_PATH, headers=headers, data=body)
+
+        assert response.status_code == 200
+        admin = db.get_admin_by_aegis_id(42)
+        assert admin is not None
+        assert admin.aegis_uuid == uuid
+
+    def test_inline_backfills_aegis_uuid_on_replay(self, webhook_client):
+        """
+        Pre-shim rows are born with aegis_uuid=NULL. When a new webhook for
+        that admin arrives during phase-1 (payload carrying user_uuid), the
+        row must be inline-backfilled -- otherwise phase-2 can never drop
+        the legacy INT column for us.
+        """
+        from api_gatekeeper_models import ConsoleAdmin
+        client, db = webhook_client
+        uuid = 'b8e9dfc0-5ba5-4bbd-a314-cb342eac0f71'
+
+        # Seed a legacy row (aegis_uuid IS NULL)
+        legacy = ConsoleAdmin.create_new(aegis_user_id=42, email=ALLOWED_EMAIL)
+        seeded = db.create_admin(legacy)
+        assert seeded is not None
+        assert seeded.aegis_uuid is None
+
+        # Second webhook delivery, now shim-era: carries user_uuid
+        headers, body = _build_request(payload={
+            'event_type': 'user.verified',
+            'user_id': 42,
+            'user_uuid': uuid,
+            'email': ALLOWED_EMAIL,
+            'timestamp': int(time.time()),
+        })
+        response = client.post(WEBHOOK_PATH, headers=headers, data=body)
+
+        assert response.status_code == 200
+        admin = db.get_admin_by_aegis_id(42)
+        assert admin.aegis_uuid == uuid
+        # Original admin_id survives — this is an in-place backfill, not a re-provision
+        assert admin.admin_id == seeded.admin_id
+
+    def test_backfill_does_not_overwrite_existing_uuid(self, webhook_client):
+        """
+        If the row already has aegis_uuid set, an incoming payload must NOT
+        overwrite it. That would be a data anomaly worth surfacing loudly.
+        The backfill DB method is fail-closed via WHERE aegis_uuid IS NULL,
+        so this test asserts the safety net holds.
+        """
+        from api_gatekeeper_models import ConsoleAdmin
+        client, db = webhook_client
+        original_uuid = 'aaaaaaaa-1111-2222-3333-444444444444'
+        different_uuid = 'bbbbbbbb-1111-2222-3333-444444444444'
+
+        pre = ConsoleAdmin.create_new(
+            aegis_user_id=42,
+            email=ALLOWED_EMAIL,
+            aegis_uuid=original_uuid,
+        )
+        seeded = db.create_admin(pre)
+        assert seeded is not None
+        assert seeded.aegis_uuid == original_uuid
+
+        headers, body = _build_request(payload={
+            'event_type': 'user.verified',
+            'user_id': 42,
+            'user_uuid': different_uuid,
+            'email': ALLOWED_EMAIL,
+            'timestamp': int(time.time()),
+        })
+        response = client.post(WEBHOOK_PATH, headers=headers, data=body)
+
+        assert response.status_code == 200
+        admin = db.get_admin_by_aegis_id(42)
+        assert admin.aegis_uuid == original_uuid  # unchanged
+
+    def test_user_uuid_absent_is_accepted(self, webhook_client):
+        """During pre-shim rollout, some senders omit user_uuid entirely."""
+        client, db = webhook_client
+        # _build_request default payload has no user_uuid
+        headers, body = _build_request()
+        response = client.post(WEBHOOK_PATH, headers=headers, data=body)
+
+        assert response.status_code == 200
+        admin = db.get_admin_by_aegis_id(42)
+        assert admin is not None
+        assert admin.aegis_uuid is None
+
+    def test_user_uuid_wrong_type_returns_400(self, webhook_client):
+        client, _ = webhook_client
+        headers, body = _build_request(payload={
+            'event_type': 'user.verified',
+            'user_id': 42,
+            'user_uuid': 12345,  # not a string
+            'email': ALLOWED_EMAIL,
+            'timestamp': int(time.time()),
+        })
+        response = client.post(WEBHOOK_PATH, headers=headers, data=body)
+        assert response.status_code == 400
+
+    def test_user_uuid_empty_string_returns_400(self, webhook_client):
+        client, _ = webhook_client
+        headers, body = _build_request(payload={
+            'event_type': 'user.verified',
+            'user_id': 42,
+            'user_uuid': '',
+            'email': ALLOWED_EMAIL,
+            'timestamp': int(time.time()),
+        })
+        response = client.post(WEBHOOK_PATH, headers=headers, data=body)
+        assert response.status_code == 400
+
+    def test_user_uuid_malformed_returns_400(self, webhook_client):
+        """
+        The webhook is the API boundary — a non-UUID string must NOT reach
+        psycopg2 (which would 500) and Aegis would then retry indefinitely.
+        """
+        client, _ = webhook_client
+        headers, body = _build_request(payload={
+            'event_type': 'user.verified',
+            'user_id': 42,
+            'user_uuid': 'not-a-uuid',
+            'email': ALLOWED_EMAIL,
+            'timestamp': int(time.time()),
+        })
+        response = client.post(WEBHOOK_PATH, headers=headers, data=body)
+        assert response.status_code == 400
+
+    def test_user_uuid_uppercase_is_normalized_to_lowercase(self, webhook_client):
+        client, db = webhook_client
+        canonical = 'b8e9dfc0-5ba5-4bbd-a314-cb342eac0f71'
+        headers, body = _build_request(payload={
+            'event_type': 'user.verified',
+            'user_id': 42,
+            'user_uuid': canonical.upper(),
+            'email': ALLOWED_EMAIL,
+            'timestamp': int(time.time()),
+        })
+        response = client.post(WEBHOOK_PATH, headers=headers, data=body)
+        assert response.status_code == 200
+
+        admin = db.get_admin_by_aegis_id(42)
+        assert admin is not None
+        assert admin.aegis_uuid == canonical  # normalised to lowercase
+
+    def test_race_repair_backfills_when_winner_had_null_uuid(self, webhook_client):
+        """
+        Concurrent-webhook race: Delivery A (no user_uuid) inserts the row
+        with aegis_uuid=NULL. Delivery B (has user_uuid) arrives, its INSERT
+        loses the ON CONFLICT race, re-reads A's row. The write-path race
+        repair must inline-backfill so B doesn't return leaving the row
+        NULL for the entire shim window.
+        """
+        from api_gatekeeper_models import ConsoleAdmin
+        client, db = webhook_client
+        uuid = 'b8e9dfc0-5ba5-4bbd-a314-cb342eac0f71'
+
+        # Simulate delivery A having already inserted with no uuid.
+        winner = ConsoleAdmin.create_new(aegis_user_id=42, email=ALLOWED_EMAIL)
+        assert db.create_admin(winner) is not None
+
+        # Now deliver B carrying the uuid. Under the OLD write path this
+        # would 200 and leave the row NULL. Under the fix it inline-repairs.
+        headers, body = _build_request(payload={
+            'event_type': 'user.verified',
+            'user_id': 42,
+            'user_uuid': uuid,
+            'email': ALLOWED_EMAIL,
+            'timestamp': int(time.time()),
+        })
+        response = client.post(WEBHOOK_PATH, headers=headers, data=body)
+        assert response.status_code == 200
+        assert db.get_admin_by_aegis_id(42).aegis_uuid == uuid
+
+    def test_fast_path_disagreement_logs_warning(self, webhook_client, caplog):
+        """
+        If a webhook replay carries a user_uuid that disagrees with the row's
+        stored aegis_uuid, log a WARNING loudly. Silently 200-ing is what
+        the authenticator's fail-closed guard is compensating for downstream.
+        """
+        import logging
+        from api_gatekeeper_models import ConsoleAdmin
+        client, db = webhook_client
+        original = 'aaaaaaaa-1111-2222-3333-444444444444'
+        different = 'bbbbbbbb-1111-2222-3333-444444444444'
+
+        pre = ConsoleAdmin.create_new(
+            aegis_user_id=42, email=ALLOWED_EMAIL, aegis_uuid=original,
+        )
+        assert db.create_admin(pre) is not None
+
+        headers, body = _build_request(payload={
+            'event_type': 'user.verified',
+            'user_id': 42,
+            'user_uuid': different,
+            'email': ALLOWED_EMAIL,
+            'timestamp': int(time.time()),
+        })
+        with caplog.at_level(logging.WARNING, logger='src.blueprints.aegis_webhook'):
+            response = client.post(WEBHOOK_PATH, headers=headers, data=body)
+        assert response.status_code == 200
+        assert db.get_admin_by_aegis_id(42).aegis_uuid == original  # unchanged
+        assert any(
+            'disagrees with stored' in rec.getMessage()
+            for rec in caplog.records
+        ), caplog.text
+
     def test_email_collision_with_different_aegis_id_returns_500(self, webhook_client):
         """
         If the email is already associated with a different aegis_user_id, the
