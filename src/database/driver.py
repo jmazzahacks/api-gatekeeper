@@ -859,24 +859,26 @@ class AuthServiceDB:
             results = cursor.fetchall()
             return [ConsoleAdmin.from_dict(dict(row)) for row in results]
 
-    def get_admin_by_aegis_id(self, aegis_user_id: int) -> Optional[ConsoleAdmin]:
+    def get_admin_by_email(self, email: str) -> Optional[ConsoleAdmin]:
         """
-        Look up a console admin by their legacy Aegis integer user id.
+        Look up a console admin by their email address.
 
-        Prefer `get_admin_by_aegis_uuid` when the caller has a UUID — this
-        method is retained as the fallback path during the Aegis int->UUID
-        shim and for admin CLI/scripts that still key on the integer id.
+        Used by the webhook handler on the email-collision anomaly path to
+        surface BOTH sides of the collision (incoming aegis_uuid + existing
+        row's aegis_uuid) in a single log line, so operators don't have to
+        pivot to Postgres to identify the pre-existing admin.
 
         Args:
-            aegis_user_id: Aegis-side legacy integer user identifier
+            email: Admin email address (case-sensitive; caller is expected
+                to have already applied any allowlist-style casing).
 
         Returns:
-            ConsoleAdmin if found, None otherwise
+            ConsoleAdmin if found, None otherwise.
         """
         with self.get_cursor(commit=False, cursor_factory=RealDictCursor) as cursor:
             cursor.execute(
-                "SELECT * FROM console_admins WHERE aegis_user_id = %s",
-                (aegis_user_id,)
+                "SELECT * FROM console_admins WHERE email = %s",
+                (email,)
             )
             result = cursor.fetchone()
             if not result:
@@ -887,10 +889,9 @@ class AuthServiceDB:
         """
         Look up a console admin by their Aegis user UUID.
 
-        UUIDs are the source of truth after Aegis phase-2. This method returns
-        None on unbackfilled legacy rows (aegis_uuid IS NULL) — callers doing
-        the shim-era UUID-first-with-INT-fallback lookup should try
-        get_admin_by_aegis_id afterwards.
+        UUID is the primary key for console admins after Aegis phase-3
+        (UUID-only contract). Callers should always have a UUID because
+        Aegis now emits UUIDs on every response.
 
         Args:
             aegis_uuid: Aegis-side user UUID (string form)
@@ -908,80 +909,44 @@ class AuthServiceDB:
                 return None
             return ConsoleAdmin.from_dict(dict(result))
 
-    def backfill_admin_aegis_uuid(self, aegis_user_id: int, aegis_uuid: str) -> bool:
-        """
-        Inline-backfill aegis_uuid on a console_admin row keyed by aegis_user_id.
-
-        Fail-closed: only fills a row whose aegis_uuid IS NULL. Refuses to
-        overwrite an already-backfilled row (returns False) — that would be a
-        data anomaly worth surfacing loudly rather than silently rewriting.
-
-        Args:
-            aegis_user_id: Aegis-side legacy integer id of the row to backfill
-            aegis_uuid: The UUID to write
-
-        Returns:
-            True if the row was backfilled, False if the row was missing or
-            already had a UUID set.
-
-        Raises:
-            psycopg2.IntegrityError: if the target aegis_uuid is already held
-                by a different admin row (the partial unique index on
-                aegis_uuid trips). Callers should treat this as a data
-                anomaly and NOT retry — the mapping is ambiguous.
-        """
-        with self.get_cursor() as cursor:
-            cursor.execute(
-                """
-                UPDATE console_admins
-                SET aegis_uuid = %s,
-                    updated_at = %s
-                WHERE aegis_user_id = %s AND aegis_uuid IS NULL
-                """,
-                (aegis_uuid, int(time.time()), aegis_user_id)
-            )
-            return cursor.rowcount > 0
-
     def create_admin(self, admin: ConsoleAdmin) -> Optional[ConsoleAdmin]:
         """
-        Create a console admin, idempotent on aegis_user_id.
+        Create a console admin, idempotent on aegis_uuid.
 
-        Uses INSERT ... ON CONFLICT (aegis_user_id) DO NOTHING so concurrent
+        Uses INSERT ... ON CONFLICT (aegis_uuid) DO NOTHING so concurrent
         webhook deliveries for the same Aegis user cannot trip a unique
-        constraint. If the aegis_user_id already exists, the existing record
-        is returned. Other unique conflicts (email, aegis_uuid partial
-        index) raise IntegrityError — those are genuine data anomalies the
-        caller should surface loudly rather than silently swallow.
+        constraint. If the aegis_uuid already exists, the existing record
+        is returned. An email collision (same email, different aegis_uuid)
+        raises psycopg2.errors.UniqueViolation — that's a genuine data
+        anomaly the caller should surface loudly rather than swallow.
 
         Args:
-            admin: ConsoleAdmin to persist (admin_id auto-generated if None;
-                aegis_uuid persisted when set)
+            admin: ConsoleAdmin to persist (admin_id auto-generated if None).
+                aegis_user_id is Optional and typically None post phase-3.
 
         Returns:
-            The created or pre-existing ConsoleAdmin, or None if the INSERT was
-            rejected by the email unique constraint (which indicates the email
-            is already associated with a different aegis_user_id — a data
-            anomaly the caller should surface).
+            The created or pre-existing ConsoleAdmin (idempotent on
+            aegis_uuid). Never returns None on the happy path — either
+            the INSERT succeeded, or the ON CONFLICT re-read found the
+            winner. Returning None indicates a genuinely surprising
+            outcome (row deleted between INSERT and SELECT?).
 
         Raises:
-            psycopg2.IntegrityError: on aegis_uuid collision (partial unique
-                index trips), so the caller can distinguish it from the
-                aegis_user_id-conflict case where this method returns the
-                existing row for idempotency.
+            psycopg2.errors.UniqueViolation: on email collision (same email,
+                different aegis_uuid) — the caller must surface this as a
+                data anomaly, not confuse it with idempotent replay.
         """
         with self.get_cursor(cursor_factory=RealDictCursor) as cursor:
-            # Email unique or aegis_uuid partial-index conflicts propagate
-            # out as psycopg2.errors.UniqueViolation — the webhook layer
-            # branches on the constraint name to attribute the anomaly.
+            # An email-unique conflict propagates as psycopg2.errors.UniqueViolation.
+            # The aegis_uuid-unique index is the intentional idempotency target.
             cursor.execute(
                 """
-                INSERT INTO console_admins (aegis_user_id, aegis_uuid, email, created_at, updated_at)
-                VALUES (%s, %s, %s, %s, %s)
-                ON CONFLICT (aegis_user_id) DO NOTHING
+                INSERT INTO console_admins (aegis_uuid, email, created_at, updated_at)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (aegis_uuid) DO NOTHING
                 RETURNING *
                 """,
                 (
-                    admin.aegis_user_id,
                     admin.aegis_uuid,
                     admin.email,
                     admin.created_at,
@@ -992,14 +957,11 @@ class AuthServiceDB:
             if result:
                 return ConsoleAdmin.from_dict(dict(result))
 
-            # Conflict on the aegis_user_id target: re-read to return the
-            # existing row so the caller can respond idempotently. The email
-            # / uuid collision paths raised above, so a re-read that returns
-            # nothing here is a genuinely surprising outcome (row deleted
-            # between INSERT and SELECT?) — surface None.
+            # Conflict on the aegis_uuid target: re-read the winning row
+            # for idempotent response.
             cursor.execute(
-                "SELECT * FROM console_admins WHERE aegis_user_id = %s",
-                (admin.aegis_user_id,)
+                "SELECT * FROM console_admins WHERE aegis_uuid = %s",
+                (admin.aegis_uuid,)
             )
             existing = cursor.fetchone()
             if existing:

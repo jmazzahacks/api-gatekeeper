@@ -19,15 +19,16 @@ import src.auth.aegis_authenticator as aegis_auth_module
 
 AEGIS_URL = 'https://aegis.test'
 BEARER_VALID = 'tok_valid'
-AEGIS_USER_ID = 7
+AEGIS_UUID = 'b8e9dfc0-5ba5-4bbd-a314-cb342eac0f71'
+SITE_UUID = '11111111-1111-1111-1111-111111111111'
 EMAIL = 'admin@example.com'
 
 
 def _user() -> User:
     now = int(time.time())
     return User(
-        id=AEGIS_USER_ID,
-        site_id=1,
+        uuid=AEGIS_UUID,
+        site_uuid=SITE_UUID,
         email=EMAIL,
         is_verified=True,
         role=UserRole.USER,
@@ -59,7 +60,7 @@ def _build_app(authenticator) -> Flask:
 
 @pytest.fixture
 def provisioned_admin(clean_db) -> ConsoleAdmin:
-    admin = ConsoleAdmin.create_new(aegis_user_id=AEGIS_USER_ID, email=EMAIL)
+    admin = ConsoleAdmin.create_new(email=EMAIL, aegis_uuid=AEGIS_UUID)
     return clean_db.create_admin(admin)
 
 

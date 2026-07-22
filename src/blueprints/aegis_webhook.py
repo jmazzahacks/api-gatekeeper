@@ -4,15 +4,19 @@ Aegis webhook endpoint for provisioning console administrators.
 Receives `user.verified` events from Aegis and provisions matching users as
 console admins, gated by the AEGIS_ADMIN_EMAILS allowlist.
 
-The handler is idempotent: replaying a webhook for an already-provisioned user
-is a no-op (both sequentially and under concurrent delivery, via ON CONFLICT
-in the underlying INSERT).
+After Aegis phase-3 (UUID-only contract) the webhook payload keys off
+`user_uuid` — the pre-contract `user_id`/`site_id` integer fields are gone.
+The handler is idempotent: replaying a webhook for an already-provisioned
+user is a no-op (both sequentially and under concurrent delivery, via
+ON CONFLICT (aegis_uuid) in the underlying INSERT).
 """
 import json
 import logging
 import uuid as uuid_mod
+from typing import Tuple
+
 import psycopg2
-from flask import Blueprint, request, jsonify, current_app
+from flask import Blueprint, Response, request, jsonify, current_app
 
 from api_gatekeeper_models import ConsoleAdmin
 from src.utils import verify_aegis_webhook_signature, is_email_allowed
@@ -25,7 +29,7 @@ WEBHOOK_PATH = '/api/webhooks/aegis'
 
 
 @aegis_webhook_bp.route(WEBHOOK_PATH, methods=['POST'])
-def handle_aegis_webhook():
+def handle_aegis_webhook() -> Tuple[Response, int]:
     """
     Handle Aegis webhook deliveries.
 
@@ -60,53 +64,49 @@ def handle_aegis_webhook():
             'message': f'Event type {event_type} not processed',
         }), 200
 
+    body_len = len(raw_body)
     try:
         payload = json.loads(raw_body) if raw_body else {}
     except json.JSONDecodeError:
-        logger.warning("Aegis webhook payload was not valid JSON")
+        logger.warning("Aegis webhook payload was not valid JSON", extra={
+            'body_len': body_len,
+            'event_type': event_type,
+        })
         return jsonify({'error': 'Invalid JSON payload'}), 400
 
-    aegis_user_id = payload.get('user_id')
-    aegis_uuid = payload.get('user_uuid')
+    raw_uuid = payload.get('user_uuid')
     email = payload.get('email')
+    payload_keys = sorted(payload.keys()) if isinstance(payload, dict) else []
 
-    # bool is a subclass of int in Python; reject it explicitly. Aegis user_ids
-    # are always positive integers.
-    if (
-        not isinstance(aegis_user_id, int)
-        or isinstance(aegis_user_id, bool)
-        or aegis_user_id <= 0
-        or not isinstance(email, str)
-        or not email
-    ):
-        logger.warning("Aegis webhook missing or invalid required fields", extra={
-            'has_user_id': aegis_user_id is not None,
-            'has_email': bool(email),
+    if not isinstance(raw_uuid, str) or not raw_uuid:
+        logger.warning("Aegis webhook missing or invalid user_uuid", extra={
+            'user_uuid_type': type(raw_uuid).__name__,
+            'payload_keys': payload_keys,
         })
-        return jsonify({'error': 'Missing or invalid required fields: user_id, email'}), 400
+        return jsonify({'error': 'Missing or invalid required field: user_uuid'}), 400
+    try:
+        # Normalise to lowercase canonical form so DB round-trips match.
+        aegis_uuid = str(uuid_mod.UUID(raw_uuid))
+    except ValueError:
+        logger.warning("Aegis webhook has malformed user_uuid", extra={
+            'raw_user_uuid': raw_uuid,
+            'payload_keys': payload_keys,
+        })
+        return jsonify({'error': 'Invalid user_uuid'}), 400
 
-    # user_uuid is Optional during the Aegis phase-1 shim. When present it
-    # MUST parse as an RFC-4122 UUID — anything else (empty string, whitespace,
-    # int, malformed) is rejected at the API boundary so a garbage payload
-    # can't reach psycopg2 and 500 there.
-    if aegis_uuid is not None:
-        if not isinstance(aegis_uuid, str):
-            logger.warning("Aegis webhook has invalid user_uuid type", extra={
-                'user_uuid_type': type(aegis_uuid).__name__,
-            })
-            return jsonify({'error': 'Invalid user_uuid'}), 400
-        try:
-            # Normalise to lowercase canonical form so DB round-trips match
-            aegis_uuid = str(uuid_mod.UUID(aegis_uuid))
-        except ValueError:
-            logger.warning("Aegis webhook has malformed user_uuid")
-            return jsonify({'error': 'Invalid user_uuid'}), 400
+    if not isinstance(email, str) or not email:
+        logger.warning("Aegis webhook missing or invalid email", extra={
+            'email_type': type(email).__name__,
+            'aegis_uuid': aegis_uuid,
+            'payload_keys': payload_keys,
+        })
+        return jsonify({'error': 'Missing or invalid required field: email'}), 400
 
     allowlist = current_app.config.get('AEGIS_ADMIN_ALLOWLIST', frozenset())
     if not is_email_allowed(email, allowlist):
         logger.warning("Aegis webhook: email not on admin allowlist", extra={
             'email': email,
-            'aegis_user_id': aegis_user_id,
+            'aegis_uuid': aegis_uuid,
             'allowlist_configured': len(allowlist) > 0,
         })
         return jsonify({
@@ -117,16 +117,12 @@ def handle_aegis_webhook():
     db = current_app.config['DB']
 
     # Fast path: already provisioned -> idempotent no-op with distinct logging.
-    # Also inline-backfills aegis_uuid on a pre-shim row when the payload
-    # carries one, and warns loudly if the payload disagrees with an
-    # already-set stored uuid (a mis-mapping the authenticator would refuse
-    # on later — logging it here means the operator sees it upstream).
-    existing = db.get_admin_by_aegis_id(aegis_user_id)
+    existing = db.get_admin_by_aegis_uuid(aegis_uuid)
     if existing:
-        _reconcile_aegis_uuid(db, existing, aegis_user_id, aegis_uuid)
         logger.info("Admin already provisioned; no-op", extra={
             'admin_id': existing.admin_id,
             'email': existing.email,
+            'aegis_uuid': aegis_uuid,
         })
         return jsonify({
             'received': True,
@@ -134,13 +130,11 @@ def handle_aegis_webhook():
             'admin_id': existing.admin_id,
         }), 200
 
-    # Write path: targeted ON CONFLICT (aegis_user_id) inside create_admin
-    # makes this safe under concurrent deliveries racing past the fast-path
-    # check above. Email- and aegis_uuid-collision paths now raise
-    # IntegrityError so the two anomaly classes get distinct 5xx responses
-    # and log lines instead of both surfacing as "email collision".
+    # Write path: ON CONFLICT (aegis_uuid) inside create_admin makes this
+    # safe under concurrent deliveries racing past the fast-path check above.
+    # Email collisions raise UniqueViolation so the anomaly gets a distinct
+    # 5xx and log line instead of silently succeeding.
     new_admin = ConsoleAdmin.create_new(
-        aegis_user_id=aegis_user_id,
         email=email,
         aegis_uuid=aegis_uuid,
     )
@@ -148,46 +142,46 @@ def handle_aegis_webhook():
         result = db.create_admin(new_admin)
     except psycopg2.errors.UniqueViolation as exc:
         constraint = getattr(exc.diag, 'constraint_name', '') or ''
-        if 'aegis_uuid' in constraint:
-            logger.error(
-                "Admin provisioning failed: aegis_uuid already belongs to a different admin row",
-                extra={
-                    'email': email,
-                    'aegis_user_id': aegis_user_id,
-                    'aegis_uuid': aegis_uuid,
-                    'constraint': constraint,
-                },
+        # Look up the existing row that owns this email so operators can see
+        # BOTH sides of the collision in a single Loki log line instead of
+        # having to pivot to Postgres. Best-effort — a stray failure here
+        # must not shadow the primary anomaly report.
+        existing_aegis_uuid = None
+        existing_admin_id = None
+        try:
+            existing_by_email = db.get_admin_by_email(email)
+            if existing_by_email is not None:
+                existing_aegis_uuid = existing_by_email.aegis_uuid
+                existing_admin_id = existing_by_email.admin_id
+        except Exception:
+            logger.exception(
+                "Failed to look up existing admin by email while attributing "
+                "email-collision anomaly"
             )
-            return jsonify({'error': 'aegis_uuid collision with existing admin'}), 500
         logger.error(
             "Admin provisioning failed: email already belongs to a different Aegis account",
             extra={
                 'email': email,
-                'aegis_user_id': aegis_user_id,
+                'aegis_uuid': aegis_uuid,
+                'existing_aegis_uuid': existing_aegis_uuid,
+                'existing_admin_id': existing_admin_id,
                 'constraint': constraint,
             },
         )
         return jsonify({'error': 'Email collision with existing admin'}), 500
 
     if not result:
-        # aegis_user_id conflict re-read returned nothing (row deleted between
-        # INSERT and re-SELECT?) — genuinely surprising, worth a 500.
+        # ON CONFLICT re-read returned nothing (row deleted between INSERT and
+        # re-SELECT?) — genuinely surprising, worth a 500.
         logger.error("Admin provisioning failed: unexpected empty re-read after conflict", extra={
             'email': email,
-            'aegis_user_id': aegis_user_id,
+            'aegis_uuid': aegis_uuid,
         })
         return jsonify({'error': 'Provisioning failed'}), 500
-
-    # Race-repair: if we lost the ON CONFLICT race, `result` is the winner's
-    # row. The winner may have inserted with aegis_uuid=NULL (its payload
-    # lacked one) while ours carries one — reconcile so the row doesn't stay
-    # unbackfilled until another webhook fires.
-    _reconcile_aegis_uuid(db, result, aegis_user_id, aegis_uuid)
 
     logger.info("Provisioned console admin", extra={
         'admin_id': result.admin_id,
         'email': email,
-        'aegis_user_id': aegis_user_id,
         'aegis_uuid': aegis_uuid,
     })
     return jsonify({
@@ -195,66 +189,3 @@ def handle_aegis_webhook():
         'message': 'Admin provisioned',
         'admin_id': result.admin_id,
     }), 200
-
-
-def _reconcile_aegis_uuid(db, existing: ConsoleAdmin, aegis_user_id: int, incoming: str) -> None:
-    """
-    Reconcile the aegis_uuid on an existing row against an incoming webhook
-    payload's value:
-
-    - Row has no uuid, payload has one → inline-backfill.
-    - Row has a uuid that matches the payload (case-insensitive) → no-op.
-    - Row has a uuid that DISAGREES with the payload → WARN loudly. This is
-      the same class of anomaly the authenticator's fail-closed guard refuses
-      on, and it's cheap to catch here upstream so operators see it before it
-      manifests as a login lockout.
-    - Payload has no uuid → nothing to do.
-    """
-    if not incoming:
-        return
-    if existing.aegis_uuid is None:
-        try:
-            backfilled = db.backfill_admin_aegis_uuid(aegis_user_id, incoming)
-        except psycopg2.errors.UniqueViolation:
-            # Target UUID is already held by a different admin row — a data
-            # anomaly (Aegis re-mapped, or two admins share the same UUID).
-            # Refuse to keep going here; caller can still return 200 for the
-            # webhook (the row exists, provisioning is fine), but the anomaly
-            # gets an ERROR line rather than silent DB-transaction abort.
-            logger.error(
-                "Inline-backfill hit aegis_uuid unique conflict",
-                extra={
-                    'admin_id': existing.admin_id,
-                    'aegis_user_id': aegis_user_id,
-                    'aegis_uuid': incoming,
-                },
-            )
-            return
-        except Exception:
-            logger.exception(
-                "Inline-backfill of aegis_uuid failed",
-                extra={
-                    'admin_id': existing.admin_id,
-                    'aegis_user_id': aegis_user_id,
-                    'aegis_uuid': incoming,
-                },
-            )
-            return
-        if backfilled:
-            logger.info("Inline-backfilled aegis_uuid on existing admin", extra={
-                'admin_id': existing.admin_id,
-                'email': existing.email,
-                'aegis_user_id': aegis_user_id,
-                'aegis_uuid': incoming,
-            })
-        return
-    if existing.aegis_uuid.lower() != incoming:
-        logger.warning(
-            "Aegis webhook payload's user_uuid disagrees with stored aegis_uuid",
-            extra={
-                'admin_id': existing.admin_id,
-                'aegis_user_id': aegis_user_id,
-                'incoming_aegis_uuid': incoming,
-                'stored_aegis_uuid': existing.aegis_uuid,
-            },
-        )

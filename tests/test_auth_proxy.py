@@ -51,11 +51,15 @@ def auth_client(clean_db, fake_tenant_client):
         yield flask_client, fake_tenant_client
 
 
-def _user(user_id: int = 42, email: str = 'user@example.com') -> User:
+USER_UUID = 'b8e9dfc0-5ba5-4bbd-a314-cb342eac0f71'
+SITE_UUID = '11111111-1111-1111-1111-111111111111'
+
+
+def _user(uuid: str = USER_UUID, email: str = 'user@example.com') -> User:
     now = int(time.time())
     return User(
-        id=user_id,
-        site_id=1,
+        uuid=uuid,
+        site_uuid=SITE_UUID,
         email=email,
         is_verified=True,
         role=UserRole.USER,
@@ -64,20 +68,20 @@ def _user(user_id: int = 42, email: str = 'user@example.com') -> User:
     )
 
 
-def _login_result(user_id: int = 42) -> LoginResult:
+def _login_result(uuid: str = USER_UUID) -> LoginResult:
     now = int(time.time())
     return LoginResult(
         auth_token=AuthToken(
             token='auth-tok',
-            user_id=user_id,
-            site_id=1,
+            user_uuid=uuid,
             expires_at=now + 3600,
+            site_uuid=SITE_UUID,
             created_at=now,
         ),
         refresh_token=RefreshToken(
             token='refresh-tok',
-            user_id=user_id,
-            site_id=1,
+            site_uuid=SITE_UUID,
+            user_uuid=uuid,
             expires_at=now + 7 * 86400,
         ),
     )
@@ -102,12 +106,17 @@ class TestRegister:
         mock.register.assert_called_once_with(email='new@example.com', password='secretpw123')
 
     def test_ignores_browser_supplied_site_id(self, auth_client):
-        """The browser-side AuthClient always sends site_id; the proxy must not forward it."""
+        """The browser-side AuthClient always sends site_id; the proxy must not forward it.
+
+        The proxy attaches its own AEGIS_SITE_ID via the shared tenant client
+        config, so a malicious browser can't redirect the request to a
+        different site by planting a site_id in the body.
+        """
         client, mock = auth_client
         mock.register.return_value = MessageResponse(message='ok')
 
         response = client.post('/api/auth/register', json={
-            'site_id': 999,
+            'site_id': 'ffffffff-ffff-ffff-ffff-ffffffffffff',  # attacker-supplied UUID
             'email': 'new@example.com',
             'password': 'secretpw123',
         })
@@ -146,7 +155,7 @@ class TestRegister:
 class TestLogin:
     def test_happy_path_returns_tokens(self, auth_client):
         client, mock = auth_client
-        mock.login.return_value = _login_result(user_id=42)
+        mock.login.return_value = _login_result()
 
         response = client.post('/api/auth/login', json={
             'email': 'user@example.com',
@@ -156,7 +165,7 @@ class TestLogin:
         assert response.status_code == 200
         body = response.get_json()
         assert body['auth_token']['token'] == 'auth-tok'
-        assert body['auth_token']['user_id'] == 42
+        assert body['auth_token']['user_uuid'] == USER_UUID
         assert body['refresh_token']['token'] == 'refresh-tok'
         mock.login.assert_called_once_with(email='user@example.com', password='pw123')
 

@@ -27,15 +27,16 @@ import src.auth.aegis_authenticator as aegis_auth_module
 
 
 BEARER_VALID = 'tok_admin'
-AEGIS_USER_ID = 7
+AEGIS_UUID = 'b8e9dfc0-5ba5-4bbd-a314-cb342eac0f71'
+SITE_UUID = '11111111-1111-1111-1111-111111111111'
 EMAIL = 'admin@example.com'
 
 
 def _user() -> User:
     now = int(time.time())
     return User(
-        id=AEGIS_USER_ID,
-        site_id=1,
+        uuid=AEGIS_UUID,
+        site_uuid=SITE_UUID,
         email=EMAIL,
         is_verified=True,
         role=UserRole.USER,
@@ -62,7 +63,7 @@ def fake_me(monkeypatch):
 @pytest.fixture
 def admin_client(clean_db, monkeypatch, fake_me):
     monkeypatch.setenv('AEGIS_API_URL', 'https://aegis.test')
-    clean_db.create_admin(ConsoleAdmin.create_new(aegis_user_id=AEGIS_USER_ID, email=EMAIL))
+    clean_db.create_admin(ConsoleAdmin.create_new(email=EMAIL, aegis_uuid=AEGIS_UUID))
     fake_me[BEARER_VALID] = _user()
 
     hmac_handler = HMACHandler(clean_db, nonce_storage={})

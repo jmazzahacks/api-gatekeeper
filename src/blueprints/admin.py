@@ -35,11 +35,19 @@ _SECRET_BYTES = 32  # secrets.token_urlsafe(32) -> ~43 char base64url string
 
 
 def _admin_log_extra() -> dict:
-    """Build the admin-identity fields for an audit log line."""
+    """Build the admin-identity fields for an audit log line.
+
+    aegis_uuid is the stable cross-service correlation key with Aegis's own
+    audit stream; admin_id is our local UUID (opaque to Aegis) and
+    admin_email is mutable via the email-change flow. Log all three. The
+    ServiceActor (admin-API-key path) doesn't carry aegis_uuid — getattr
+    defaults to None there.
+    """
     admin = getattr(g, 'console_admin', None)
     return {
         'admin_id': admin.admin_id if admin else None,
         'admin_email': admin.email if admin else None,
+        'aegis_uuid': getattr(admin, 'aegis_uuid', None) if admin else None,
     }
 
 

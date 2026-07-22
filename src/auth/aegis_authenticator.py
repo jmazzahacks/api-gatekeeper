@@ -3,7 +3,8 @@ Authenticate incoming bearer tokens as console admins.
 
 Wraps the Aegis `/api/auth/me` introspection endpoint: given a bearer token,
 resolves it to an Aegis user, then checks that the user is provisioned in the
-local `console_admins` table. Returns a ConsoleAdmin or None.
+local `console_admins` table by their Aegis UUID. Returns a ConsoleAdmin or
+None.
 
 Callers should treat None as "not authenticated" and respond 401 — do not
 distinguish between "bad token" and "token is fine but user isn't an admin"
@@ -70,6 +71,7 @@ class AegisAuthenticator:
         Failure modes collapsed to None (no oracle):
         - Empty/blank token
         - Aegis rejected the token (unknown, expired, malformed)
+        - Aegis returned a User with a missing or unparseable UUID
         - Token is valid but the Aegis user isn't provisioned in console_admins
         - Aegis transport error (logged at warning)
         """
@@ -84,7 +86,16 @@ class AegisAuthenticator:
         if user is None:
             return None
 
-        admin = self._lookup_admin(user.id, _normalize_uuid(user.uuid))
+        normalized = _normalize_uuid(user.uuid)
+        if normalized is None:
+            logger.info(
+                "Aegis /me returned a user with a missing or malformed uuid; "
+                "treating as unauthenticated",
+                extra={'aegis_uuid_raw': user.uuid, 'email': user.email},
+            )
+            return None
+
+        admin = self._lookup_admin(normalized, user.email)
         if admin is None:
             return None
 
@@ -103,9 +114,7 @@ class AegisAuthenticator:
     def _introspect(self, bearer_token: str) -> Optional[User]:
         """
         Call Aegis /api/auth/me and return the User on success, None on any
-        failure. Returning the full User (rather than a tuple of identifiers)
-        keeps both `id` and `uuid` named at call sites and avoids adding a
-        one-off dataclass for the shim window.
+        failure.
         """
         client = AegisClient(AegisClientConfig(
             api_url=self._aegis_api_url,
@@ -125,69 +134,33 @@ class AegisAuthenticator:
             return None
 
     def _lookup_admin(
-        self, aegis_user_id: int, aegis_uuid: Optional[str]
+        self, aegis_uuid: str, aegis_email: str
     ) -> Optional[ConsoleAdmin]:
         """
-        Resolve an Aegis identity to a provisioned ConsoleAdmin.
-
-        UUID-first with INT fallback (fail-closed): if aegis_uuid is present,
-        try the UUID lookup first. If that misses, fall back to the legacy
-        integer id — the fail-closed guard only refuses when BOTH sides carry
-        a UUID and they disagree (which can only happen if the row was
-        backfilled with a different identity than what Aegis just handed us).
-        If the token has no UUID (pre-shim server) or the row hasn't been
-        backfilled yet, the INT match is accepted.
+        Resolve an Aegis UUID to a provisioned ConsoleAdmin.
 
         `aegis_uuid` is expected to be pre-normalised (lowercase canonical
-        form) by `_normalize_uuid` so the equality compare is case-insensitive
+        form) by `_normalize_uuid` so equality compares are case-insensitive
         and Postgres round-trips are consistent.
 
-        After the backfill script runs and phase-2 lands, all rows will have
-        aegis_uuid populated and the INT fallback becomes dead code — safe to
-        remove once we drop the aegis_user_id column.
+        `aegis_email` is Aegis's view of the user's email — carried in the
+        "not a provisioned console admin" log line so a support engineer
+        answering a "why can't I log in" ticket doesn't have to pivot from
+        UUID to email through Aegis.
         """
-        if aegis_uuid:
-            try:
-                admin = self._db.get_admin_by_aegis_uuid(aegis_uuid)
-            except psycopg2.DataError:
-                logger.info(
-                    "Aegis /me returned an unparseable uuid; treating as unauthenticated",
-                    extra={
-                        'aegis_user_id': aegis_user_id,
-                        'aegis_uuid': aegis_uuid,
-                    },
-                )
-                return None
-            if admin is not None:
-                return admin
-
-        admin = self._db.get_admin_by_aegis_id(aegis_user_id)
+        try:
+            admin = self._db.get_admin_by_aegis_uuid(aegis_uuid)
+        except psycopg2.DataError:
+            logger.info(
+                "Aegis /me returned an unparseable uuid; treating as unauthenticated",
+                extra={'aegis_uuid': aegis_uuid, 'email': aegis_email},
+            )
+            return None
         if admin is None:
             logger.info(
                 "Authenticated Aegis user is not a provisioned console admin",
-                extra={'aegis_user_id': aegis_user_id, 'aegis_uuid': aegis_uuid},
+                extra={'aegis_uuid': aegis_uuid, 'email': aegis_email},
             )
-            return None
-
-        # Fail-closed: only refuse when both sides carry a UUID and they
-        # disagree. `admin.aegis_uuid == aegis_uuid` when the row was
-        # backfilled with the same identity Aegis just handed us — accept.
-        if (
-            aegis_uuid is not None
-            and admin.aegis_uuid is not None
-            and admin.aegis_uuid.lower() != aegis_uuid
-        ):
-            logger.warning(
-                "Refusing INT fallback: matched admin has a different aegis_uuid",
-                extra={
-                    'aegis_user_id': aegis_user_id,
-                    'incoming_aegis_uuid': aegis_uuid,
-                    'stored_aegis_uuid': admin.aegis_uuid,
-                    'admin_id': admin.admin_id,
-                },
-            )
-            return None
-
         return admin
 
     def _cache_get(self, token: str) -> Optional[ConsoleAdmin]:

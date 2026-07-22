@@ -39,22 +39,21 @@ def aegis_api_url() -> str:
 
 def aegis_site_id() -> str:
     """
-    Return the configured Aegis site identifier as a validated string.
+    Return the configured Aegis site UUID as a validated string.
 
-    Accepts either the legacy integer id (as a decimal string) or the UUID
-    string form. The Aegis API accepts both during the int->UUID shim; the
-    client library types this as `Identifier = Union[int, str]`. We validate
-    at the config layer so a typo (e.g. AEGIS_SITE_ID=fivve) fails fast at
-    startup rather than surfacing later as an opaque 4xx from Aegis.
+    After Aegis phase-3 (UUID-only contract) the site identifier is a UUID
+    only — the legacy integer form is rejected. Validated at the config
+    layer so a typo (e.g. `AEGIS_SITE_ID=5` left over from the shim window)
+    fails fast at startup rather than surfacing later as an opaque 4xx from
+    Aegis.
     """
     raw = _required_env('AEGIS_SITE_ID')
-    if raw.isdigit():
-        return raw
     try:
         uuid_mod.UUID(raw)
     except ValueError:
         raise RuntimeError(
-            f"AEGIS_SITE_ID must be a decimal integer or UUID, got {raw!r}"
+            f"AEGIS_SITE_ID must be a UUID (Aegis phase-3 contract dropped "
+            f"integer site ids); got {raw!r}"
         )
     return raw
 

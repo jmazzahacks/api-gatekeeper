@@ -137,42 +137,52 @@ COMMENT ON COLUMN client_permissions.created_at IS 'Unix timestamp (seconds sinc
 
 -- Console Admins table: Human users authorized to administer the gatekeeper via the console
 -- Provisioned from Aegis user.verified webhook events; distinct from `clients` (API credentials).
+-- Post Aegis phase-3 (UUID-only contract): aegis_uuid is the primary Aegis identifier.
+-- aegis_user_id remains as read-only historical data on shim-era rows.
 CREATE TABLE IF NOT EXISTS console_admins (
     admin_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    aegis_user_id BIGINT NOT NULL,
-    aegis_uuid UUID,
+    aegis_uuid UUID NOT NULL,
+    aegis_user_id BIGINT,
     email TEXT NOT NULL,
     created_at BIGINT NOT NULL DEFAULT extract(epoch from now())::bigint,
     updated_at BIGINT NOT NULL DEFAULT extract(epoch from now())::bigint,
 
     -- Constraints
-    CONSTRAINT admin_aegis_user_id_unique UNIQUE (aegis_user_id),
     CONSTRAINT admin_email_unique UNIQUE (email),
     CONSTRAINT admin_email_format CHECK (email ~ '^[^@]+@[^@]+\.[^@]+$')
 );
 
--- Idempotent migration for pre-UUID installs: adds aegis_uuid without needing
--- a dedicated migration runner. Safe to re-apply.
+-- Idempotent post-phase-3 migration for installs that were created during the
+-- Aegis shim window (aegis_user_id NOT NULL, aegis_uuid nullable). Order
+-- matters: DROP NOT NULL on aegis_user_id first (webhook no longer supplies
+-- it), then SET NOT NULL on aegis_uuid (backfill has run). SET NOT NULL
+-- fails loudly if any pre-phase-3 row still lacks a UUID — that's the
+-- desired signal, not a silent skip.
 ALTER TABLE console_admins ADD COLUMN IF NOT EXISTS aegis_uuid UUID;
+ALTER TABLE console_admins ALTER COLUMN aegis_user_id DROP NOT NULL;
+ALTER TABLE console_admins ALTER COLUMN aegis_uuid SET NOT NULL;
+ALTER TABLE console_admins DROP CONSTRAINT IF EXISTS admin_aegis_user_id_unique;
+DROP INDEX IF EXISTS idx_console_admins_aegis_id;
+-- Shim-era installs created idx_console_admins_aegis_uuid as a PARTIAL unique
+-- index (WHERE aegis_uuid IS NOT NULL). That predicate breaks ON CONFLICT
+-- (aegis_uuid) — Postgres needs a full unique index or constraint on the
+-- column to infer the conflict target. Drop and recreate.
+DROP INDEX IF EXISTS idx_console_admins_aegis_uuid;
 
 -- Index for email lookups during provisioning
 CREATE INDEX IF NOT EXISTS idx_console_admins_email ON console_admins(email);
 
--- Index for Aegis ID lookups during provisioning
-CREATE INDEX IF NOT EXISTS idx_console_admins_aegis_id ON console_admins(aegis_user_id);
-
--- Partial unique index for Aegis UUID lookups. Nullable during the int->UUID
--- shim; uniqueness only applies to populated rows so unbackfilled rows don't
--- collide as NULL.
+-- Unique index on aegis_uuid — the natural key for a console admin after
+-- Aegis phase-3. Non-partial: aegis_uuid is NOT NULL post-phase-3, and a
+-- non-partial index is required as an ON CONFLICT target.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_console_admins_aegis_uuid
-    ON console_admins(aegis_uuid)
-    WHERE aegis_uuid IS NOT NULL;
+    ON console_admins(aegis_uuid);
 
 -- Comments for documentation
 COMMENT ON TABLE console_admins IS 'Human administrators provisioned from Aegis user.verified webhooks';
 COMMENT ON COLUMN console_admins.admin_id IS 'Local unique identifier for the console admin';
-COMMENT ON COLUMN console_admins.aegis_user_id IS 'Aegis user_id linking this admin to their Aegis identity (legacy int; kept as fallback during Aegis phase-1 shim, will be dropped after phase-2)';
-COMMENT ON COLUMN console_admins.aegis_uuid IS 'Aegis user UUID (source of truth after phase-2). Nullable during shim; backfilled by scripts/backfill_aegis_uuid.py and by inline webhook writes';
+COMMENT ON COLUMN console_admins.aegis_uuid IS 'Aegis user UUID — primary identifier for the admin (Aegis phase-3 contract, UUID-only)';
+COMMENT ON COLUMN console_admins.aegis_user_id IS 'Aegis pre-contract integer user id. Read-only historical data on shim-era rows; never populated on new admins after phase-3.';
 COMMENT ON COLUMN console_admins.email IS 'Admin email address (unique)';
 COMMENT ON COLUMN console_admins.created_at IS 'Unix timestamp (seconds since epoch) when admin was provisioned';
 COMMENT ON COLUMN console_admins.updated_at IS 'Unix timestamp (seconds since epoch) when admin record was last updated';
