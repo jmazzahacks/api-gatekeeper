@@ -23,8 +23,10 @@ redis
 # Centralized logging with Loki
 byteforge-loki-logging @ git+https://${CR_PAT}@github.com/jmazzahacks/byteforge-loki-logging.git
 
-# Shared models
-api-gatekeeper-models @ git+https://github.com/jmazzahacks/api-gatekeeper-models.git
+# Shared models. Pinned to v0.7.0 (post Aegis phase-3 final cleanup:
+# ConsoleAdmin.aegis_user_id field removed, matching the DDL drop of
+# console_admins.aegis_user_id). See ticket 372e1d0d.
+api-gatekeeper-models @ git+https://github.com/jmazzahacks/api-gatekeeper-models.git@v0.7.0
 
 # Aegis client (bearer token introspection via /api/auth/me).
 # Pinned to the "v2.0.0" commit (phase-3 UUID-only contract). The client

@@ -922,7 +922,6 @@ class AuthServiceDB:
 
         Args:
             admin: ConsoleAdmin to persist (admin_id auto-generated if None).
-                aegis_user_id is Optional and typically None post phase-3.
 
         Returns:
             The created or pre-existing ConsoleAdmin (idempotent on

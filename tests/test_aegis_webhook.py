@@ -332,8 +332,6 @@ class TestProvisioning:
         assert admin is not None
         assert admin.email == ALLOWED_EMAIL
         assert admin.aegis_uuid == USER_UUID
-        # Post phase-3: aegis_user_id is not populated on new admins.
-        assert admin.aegis_user_id is None
 
     def test_sequential_replay_is_idempotent(self, webhook_client):
         """Second delivery for the same user is a no-op, same admin_id returned."""

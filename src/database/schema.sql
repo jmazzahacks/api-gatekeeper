@@ -138,11 +138,9 @@ COMMENT ON COLUMN client_permissions.created_at IS 'Unix timestamp (seconds sinc
 -- Console Admins table: Human users authorized to administer the gatekeeper via the console
 -- Provisioned from Aegis user.verified webhook events; distinct from `clients` (API credentials).
 -- Post Aegis phase-3 (UUID-only contract): aegis_uuid is the primary Aegis identifier.
--- aegis_user_id remains as read-only historical data on shim-era rows.
 CREATE TABLE IF NOT EXISTS console_admins (
     admin_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     aegis_uuid UUID NOT NULL,
-    aegis_user_id BIGINT,
     email TEXT NOT NULL,
     created_at BIGINT NOT NULL DEFAULT extract(epoch from now())::bigint,
     updated_at BIGINT NOT NULL DEFAULT extract(epoch from now())::bigint,
@@ -152,14 +150,15 @@ CREATE TABLE IF NOT EXISTS console_admins (
     CONSTRAINT admin_email_format CHECK (email ~ '^[^@]+@[^@]+\.[^@]+$')
 );
 
--- Idempotent post-phase-3 migration for installs that were created during the
--- Aegis shim window (aegis_user_id NOT NULL, aegis_uuid nullable). Order
--- matters: DROP NOT NULL on aegis_user_id first (webhook no longer supplies
--- it), then SET NOT NULL on aegis_uuid (backfill has run). SET NOT NULL
--- fails loudly if any pre-phase-3 row still lacks a UUID — that's the
--- desired signal, not a silent skip.
+-- Idempotent post-phase-3 migration for installs created during the Aegis
+-- shim window. Fresh installs skip past these no-ops (CREATE TABLE above
+-- already produces the target shape); shim-era installs get promoted.
+--
+-- Order matters: ensure aegis_uuid exists and is NOT NULL (backfill has run)
+-- BEFORE dropping aegis_user_id, so a partially-migrated row can't slip
+-- through with neither identifier. SET NOT NULL fails loudly if any row
+-- still lacks a UUID — that's the desired signal, not a silent skip.
 ALTER TABLE console_admins ADD COLUMN IF NOT EXISTS aegis_uuid UUID;
-ALTER TABLE console_admins ALTER COLUMN aegis_user_id DROP NOT NULL;
 ALTER TABLE console_admins ALTER COLUMN aegis_uuid SET NOT NULL;
 ALTER TABLE console_admins DROP CONSTRAINT IF EXISTS admin_aegis_user_id_unique;
 DROP INDEX IF EXISTS idx_console_admins_aegis_id;
@@ -168,6 +167,10 @@ DROP INDEX IF EXISTS idx_console_admins_aegis_id;
 -- (aegis_uuid) — Postgres needs a full unique index or constraint on the
 -- column to infer the conflict target. Drop and recreate.
 DROP INDEX IF EXISTS idx_console_admins_aegis_uuid;
+-- Final post-phase-3 cleanup: drop the residual shim column. The int→UUID
+-- mapping is archived server-side on the Aegis boxes; this is not the last
+-- copy. Idempotent — no-op after the first run and on fresh installs.
+ALTER TABLE console_admins DROP COLUMN IF EXISTS aegis_user_id;
 
 -- Index for email lookups during provisioning
 CREATE INDEX IF NOT EXISTS idx_console_admins_email ON console_admins(email);
@@ -182,7 +185,6 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_console_admins_aegis_uuid
 COMMENT ON TABLE console_admins IS 'Human administrators provisioned from Aegis user.verified webhooks';
 COMMENT ON COLUMN console_admins.admin_id IS 'Local unique identifier for the console admin';
 COMMENT ON COLUMN console_admins.aegis_uuid IS 'Aegis user UUID — primary identifier for the admin (Aegis phase-3 contract, UUID-only)';
-COMMENT ON COLUMN console_admins.aegis_user_id IS 'Aegis pre-contract integer user id. Read-only historical data on shim-era rows; never populated on new admins after phase-3.';
 COMMENT ON COLUMN console_admins.email IS 'Admin email address (unique)';
 COMMENT ON COLUMN console_admins.created_at IS 'Unix timestamp (seconds since epoch) when admin was provisioned';
 COMMENT ON COLUMN console_admins.updated_at IS 'Unix timestamp (seconds since epoch) when admin record was last updated';
