@@ -909,6 +909,29 @@ class AuthServiceDB:
                 return None
             return ConsoleAdmin.from_dict(dict(result))
 
+    def delete_admin_by_aegis_uuid(self, aegis_uuid: str) -> bool:
+        """
+        Delete a console admin row by their Aegis user UUID.
+
+        Called by the Aegis webhook handler on `user.deleted` events. Aegis
+        delivers webhooks best-effort with a 5s timeout (at-most-once), so
+        an unknown aegis_uuid must be treated as a no-op rather than an
+        error — deleting an already-gone admin is a valid outcome under
+        retry semantics.
+
+        Args:
+            aegis_uuid: Aegis-side user UUID (string form).
+
+        Returns:
+            True if a row was deleted, False if no row matched.
+        """
+        with self.get_cursor() as cursor:
+            cursor.execute(
+                "DELETE FROM console_admins WHERE aegis_uuid = %s",
+                (aegis_uuid,)
+            )
+            return cursor.rowcount > 0
+
     def create_admin(self, admin: ConsoleAdmin) -> Optional[ConsoleAdmin]:
         """
         Create a console admin, idempotent on aegis_uuid.

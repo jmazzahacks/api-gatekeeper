@@ -1,19 +1,23 @@
 """
-Aegis webhook endpoint for provisioning console administrators.
+Aegis webhook endpoint for console-admin lifecycle events.
 
-Receives `user.verified` events from Aegis and provisions matching users as
-console admins, gated by the AEGIS_ADMIN_EMAILS allowlist.
+Two events are handled:
+- `user.verified` — provisions matching users as console admins, gated by the
+  AEGIS_ADMIN_EMAILS allowlist. Idempotent on aegis_uuid via ON CONFLICT.
+- `user.deleted` — removes the matching console_admins row (keyed on
+  aegis_uuid == user_uuid). Idempotent: an unknown uuid is a 200 no-op.
+  No allowlist check on deletion — a user removed upstream should be
+  deprovisioned regardless of whether they'd be re-provisionable today.
 
-After Aegis phase-3 (UUID-only contract) the webhook payload keys off
-`user_uuid` — the pre-contract `user_id`/`site_id` integer fields are gone.
-The handler is idempotent: replaying a webhook for an already-provisioned
-user is a no-op (both sequentially and under concurrent delivery, via
-ON CONFLICT (aegis_uuid) in the underlying INSERT).
+Envelope: Aegis phase-3 (UUID-only contract). Payloads carry `user_uuid`
+and `site_uuid`; the pre-contract `user_id`/`site_id` integer keys are
+gone. The additive `event_id` field (dedup key, added 2026-07-26) is
+tolerated but not currently consumed.
 """
 import json
 import logging
 import uuid as uuid_mod
-from typing import Tuple
+from typing import List, Optional, Tuple
 
 import psycopg2
 from flask import Blueprint, Response, request, jsonify, current_app
@@ -27,6 +31,8 @@ aegis_webhook_bp = Blueprint('aegis_webhook', __name__)
 
 WEBHOOK_PATH = '/api/webhooks/aegis'
 
+HANDLED_EVENT_TYPES = frozenset({'user.verified', 'user.deleted'})
+
 
 @aegis_webhook_bp.route(WEBHOOK_PATH, methods=['POST'])
 def handle_aegis_webhook() -> Tuple[Response, int]:
@@ -34,9 +40,10 @@ def handle_aegis_webhook() -> Tuple[Response, int]:
     Handle Aegis webhook deliveries.
 
     Returns 2xx for all cases Aegis shouldn't retry on (including allowlist
-    rejections and unhandled event types). Returns 401 for invalid signatures,
-    400 for malformed payloads, and 503 if the handler is not configured
-    (so Aegis gives up rather than retrying into a misconfiguration).
+    rejections, unhandled event types, and idempotent no-ops). Returns 401
+    for invalid signatures, 400 for malformed payloads, and 503 if the
+    handler is not configured (so Aegis gives up rather than retrying
+    into a misconfiguration).
     """
     webhook_secret = current_app.config.get('AEGIS_WEBHOOK_SECRET')
     if not webhook_secret:
@@ -55,8 +62,8 @@ def handle_aegis_webhook() -> Tuple[Response, int]:
         return jsonify({'error': 'Invalid signature'}), 401
 
     event_type = request.headers.get('X-Aegis-Event', '')
-    if event_type != 'user.verified':
-        logger.info("Ignoring non-user.verified Aegis event", extra={
+    if event_type not in HANDLED_EVENT_TYPES:
+        logger.info("Ignoring unhandled Aegis event", extra={
             'event_type': event_type,
         })
         return jsonify({
@@ -74,13 +81,18 @@ def handle_aegis_webhook() -> Tuple[Response, int]:
         })
         return jsonify({'error': 'Invalid JSON payload'}), 400
 
-    raw_uuid = payload.get('user_uuid')
-    email = payload.get('email')
+    raw_uuid = payload.get('user_uuid') if isinstance(payload, dict) else None
+    # event_id is Aegis's dedup key (uuidv7, additive on all events as of 2026-07-26).
+    # We don't consume it for dedup — outcome-idempotent by design — but we log it
+    # so operators can correlate our processing with Aegis's delivery log.
+    event_id = payload.get('event_id') if isinstance(payload, dict) else None
     payload_keys = sorted(payload.keys()) if isinstance(payload, dict) else []
 
     if not isinstance(raw_uuid, str) or not raw_uuid:
         logger.warning("Aegis webhook missing or invalid user_uuid", extra={
             'user_uuid_type': type(raw_uuid).__name__,
+            'event_type': event_type,
+            'event_id': event_id,
             'payload_keys': payload_keys,
         })
         return jsonify({'error': 'Missing or invalid required field: user_uuid'}), 400
@@ -90,14 +102,45 @@ def handle_aegis_webhook() -> Tuple[Response, int]:
     except ValueError:
         logger.warning("Aegis webhook has malformed user_uuid", extra={
             'raw_user_uuid': raw_uuid,
+            'event_type': event_type,
+            'event_id': event_id,
             'payload_keys': payload_keys,
         })
         return jsonify({'error': 'Invalid user_uuid'}), 400
+
+    db = current_app.config['DB']
+
+    if event_type == 'user.verified':
+        return _handle_user_verified(payload, aegis_uuid, event_id, payload_keys, db)
+    elif event_type == 'user.deleted':
+        return _handle_user_deleted(aegis_uuid, event_id, db)
+    # Unreachable — HANDLED_EVENT_TYPES gates entry above. Defensive 200 in
+    # case someone adds a type to the set without wiring a branch here.
+    logger.error("Aegis webhook: handled event_type has no branch wired", extra={
+        'event_type': event_type,
+        'event_id': event_id,
+    })
+    return jsonify({
+        'received': True,
+        'message': f'Event type {event_type} recognised but not routed',
+    }), 200
+
+
+def _handle_user_verified(
+    payload: dict,
+    aegis_uuid: str,
+    event_id: Optional[str],
+    payload_keys: List[str],
+    db,
+) -> Tuple[Response, int]:
+    """Provision (or replay-noop) a console admin for a verified Aegis user."""
+    email = payload.get('email')
 
     if not isinstance(email, str) or not email:
         logger.warning("Aegis webhook missing or invalid email", extra={
             'email_type': type(email).__name__,
             'aegis_uuid': aegis_uuid,
+            'event_id': event_id,
             'payload_keys': payload_keys,
         })
         return jsonify({'error': 'Missing or invalid required field: email'}), 400
@@ -107,14 +150,13 @@ def handle_aegis_webhook() -> Tuple[Response, int]:
         logger.warning("Aegis webhook: email not on admin allowlist", extra={
             'email': email,
             'aegis_uuid': aegis_uuid,
+            'event_id': event_id,
             'allowlist_configured': len(allowlist) > 0,
         })
         return jsonify({
             'received': True,
             'message': 'Email not authorized for admin provisioning',
         }), 200
-
-    db = current_app.config['DB']
 
     # Fast path: already provisioned -> idempotent no-op with distinct logging.
     existing = db.get_admin_by_aegis_uuid(aegis_uuid)
@@ -123,6 +165,7 @@ def handle_aegis_webhook() -> Tuple[Response, int]:
             'admin_id': existing.admin_id,
             'email': existing.email,
             'aegis_uuid': aegis_uuid,
+            'event_id': event_id,
         })
         return jsonify({
             'received': True,
@@ -163,6 +206,7 @@ def handle_aegis_webhook() -> Tuple[Response, int]:
             extra={
                 'email': email,
                 'aegis_uuid': aegis_uuid,
+                'event_id': event_id,
                 'existing_aegis_uuid': existing_aegis_uuid,
                 'existing_admin_id': existing_admin_id,
                 'constraint': constraint,
@@ -176,6 +220,7 @@ def handle_aegis_webhook() -> Tuple[Response, int]:
         logger.error("Admin provisioning failed: unexpected empty re-read after conflict", extra={
             'email': email,
             'aegis_uuid': aegis_uuid,
+            'event_id': event_id,
         })
         return jsonify({'error': 'Provisioning failed'}), 500
 
@@ -183,9 +228,65 @@ def handle_aegis_webhook() -> Tuple[Response, int]:
         'admin_id': result.admin_id,
         'email': email,
         'aegis_uuid': aegis_uuid,
+        'event_id': event_id,
     })
     return jsonify({
         'received': True,
         'message': 'Admin provisioned',
         'admin_id': result.admin_id,
+    }), 200
+
+
+def _handle_user_deleted(
+    aegis_uuid: str,
+    event_id: Optional[str],
+    db,
+) -> Tuple[Response, int]:
+    """
+    Remove the console_admins row for a deleted Aegis user.
+
+    Idempotent: an unknown aegis_uuid returns 200 no-op (retry-safe).
+    No allowlist check — a user removed upstream should be deprovisioned
+    regardless of whether they'd currently qualify for re-provisioning.
+    """
+    # Fast path: look up first so we can log the pre-existing admin_id/email
+    # in the resolution line. Also lets us distinguish "actually removed"
+    # from "already gone" in Loki.
+    existing = db.get_admin_by_aegis_uuid(aegis_uuid)
+    if not existing:
+        logger.info("Aegis user.deleted for unknown aegis_uuid; no-op", extra={
+            'aegis_uuid': aegis_uuid,
+            'event_id': event_id,
+        })
+        return jsonify({
+            'received': True,
+            'message': 'No matching admin to remove',
+        }), 200
+
+    deleted = db.delete_admin_by_aegis_uuid(aegis_uuid)
+    if not deleted:
+        # Row disappeared between our fast-path SELECT and the DELETE. Could
+        # be a concurrent delivery, but also a manual admin script or any
+        # other external DELETE. Still an idempotent outcome — log the race
+        # neutrally so operators don't chase a phantom duplicate delivery.
+        logger.info("Aegis user.deleted found row missing between SELECT and DELETE; no-op", extra={
+            'aegis_uuid': aegis_uuid,
+            'event_id': event_id,
+            'expected_admin_id': existing.admin_id,
+        })
+        return jsonify({
+            'received': True,
+            'message': 'Admin already removed',
+        }), 200
+
+    logger.info("Deprovisioned console admin per Aegis user.deleted", extra={
+        'admin_id': existing.admin_id,
+        'email': existing.email,
+        'aegis_uuid': aegis_uuid,
+        'event_id': event_id,
+    })
+    return jsonify({
+        'received': True,
+        'message': 'Admin removed',
+        'admin_id': existing.admin_id,
     }), 200

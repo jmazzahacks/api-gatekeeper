@@ -164,7 +164,7 @@ class TestWebhookAuth:
 
 
 class TestEventTypeFiltering:
-    """Only user.verified events are processed; others return 200 no-op."""
+    """Only handled events (user.verified, user.deleted) are processed; others return 200 no-op."""
 
     def test_unknown_event_type_is_ignored(self, webhook_client):
         client, db = webhook_client
@@ -414,3 +414,195 @@ class TestProvisioning:
         # Original record is untouched
         assert db.get_admin_by_aegis_uuid(OTHER_USER_UUID).email == ALLOWED_EMAIL
         assert db.get_admin_by_aegis_uuid(USER_UUID) is None
+
+
+class TestUserDeleted:
+    """user.deleted events remove the matching console_admins row, idempotently."""
+
+    def _seed_admin(self, db, aegis_uuid=USER_UUID, email=ALLOWED_EMAIL):
+        from api_gatekeeper_models import ConsoleAdmin
+        admin = ConsoleAdmin.create_new(email=email, aegis_uuid=aegis_uuid)
+        return db.create_admin(admin)
+
+    def _deleted_payload(self, user_uuid=USER_UUID, email=ALLOWED_EMAIL, **extra):
+        payload = {
+            'event_type': 'user.deleted',
+            'site_uuid': SITE_UUID,
+            'user_uuid': user_uuid,
+            'email': email,
+            'aegis_role': 'admin',
+            'timestamp': int(time.time()),
+        }
+        payload.update(extra)
+        return payload
+
+    def test_deletes_existing_admin(self, webhook_client):
+        client, db = webhook_client
+        seeded = self._seed_admin(db)
+        assert db.get_admin_by_aegis_uuid(USER_UUID) is not None
+
+        headers, body = _build_request(
+            event_type='user.deleted',
+            payload=self._deleted_payload(),
+        )
+        response = client.post(WEBHOOK_PATH, headers=headers, data=body)
+
+        assert response.status_code == 200
+        data = response.get_json()
+        assert data['received'] is True
+        assert data['admin_id'] == seeded.admin_id
+        assert db.get_admin_by_aegis_uuid(USER_UUID) is None
+
+    def test_unknown_aegis_uuid_is_idempotent(self, webhook_client):
+        """No admin to remove -> 200 no-op (not 404). Retry-safe."""
+        client, db = webhook_client
+        assert db.get_admin_by_aegis_uuid(OTHER_USER_UUID) is None
+
+        headers, body = _build_request(
+            event_type='user.deleted',
+            payload=self._deleted_payload(user_uuid=OTHER_USER_UUID),
+        )
+        response = client.post(WEBHOOK_PATH, headers=headers, data=body)
+
+        assert response.status_code == 200
+        assert response.get_json()['received'] is True
+
+    def test_sequential_replay_is_idempotent(self, webhook_client):
+        """Second user.deleted for the same aegis_uuid is a 200 no-op."""
+        client, db = webhook_client
+        self._seed_admin(db)
+
+        headers, body = _build_request(
+            event_type='user.deleted',
+            payload=self._deleted_payload(),
+        )
+        first = client.post(WEBHOOK_PATH, headers=headers, data=body)
+        assert first.status_code == 200
+        assert db.get_admin_by_aegis_uuid(USER_UUID) is None
+
+        headers2, body2 = _build_request(
+            event_type='user.deleted',
+            payload=self._deleted_payload(),
+        )
+        second = client.post(WEBHOOK_PATH, headers=headers2, data=body2)
+        assert second.status_code == 200
+
+    def test_only_matching_aegis_uuid_is_removed(self, webhook_client):
+        """Deleting one admin must not affect another admin's row."""
+        client, db = webhook_client
+        self._seed_admin(db, aegis_uuid=USER_UUID, email=ALLOWED_EMAIL)
+        self._seed_admin(db, aegis_uuid=OTHER_USER_UUID, email='other-admin@example.com')
+
+        headers, body = _build_request(
+            event_type='user.deleted',
+            payload=self._deleted_payload(),
+        )
+        response = client.post(WEBHOOK_PATH, headers=headers, data=body)
+
+        assert response.status_code == 200
+        assert db.get_admin_by_aegis_uuid(USER_UUID) is None
+        assert db.get_admin_by_aegis_uuid(OTHER_USER_UUID) is not None
+
+    def test_user_uuid_uppercase_is_normalized(self, webhook_client):
+        client, db = webhook_client
+        self._seed_admin(db)
+
+        headers, body = _build_request(
+            event_type='user.deleted',
+            payload=self._deleted_payload(user_uuid=USER_UUID.upper()),
+        )
+        response = client.post(WEBHOOK_PATH, headers=headers, data=body)
+
+        assert response.status_code == 200
+        assert db.get_admin_by_aegis_uuid(USER_UUID) is None
+
+    def test_missing_user_uuid_returns_400(self, webhook_client):
+        client, _ = webhook_client
+        headers, body = _build_request(
+            event_type='user.deleted',
+            payload={
+                'event_type': 'user.deleted',
+                'email': ALLOWED_EMAIL,
+                'timestamp': int(time.time()),
+            },
+        )
+        response = client.post(WEBHOOK_PATH, headers=headers, data=body)
+        assert response.status_code == 400
+        assert 'user_uuid' in response.get_json()['error']
+
+    def test_malformed_user_uuid_returns_400(self, webhook_client):
+        client, _ = webhook_client
+        headers, body = _build_request(
+            event_type='user.deleted',
+            payload=self._deleted_payload(user_uuid='not-a-uuid'),
+        )
+        response = client.post(WEBHOOK_PATH, headers=headers, data=body)
+        assert response.status_code == 400
+
+    def test_missing_email_is_still_accepted(self, webhook_client):
+        """
+        user.deleted does not require email (aegis_uuid is the sole join key).
+        Deletion must proceed even if the payload lacks email.
+        """
+        client, db = webhook_client
+        self._seed_admin(db)
+
+        payload = self._deleted_payload()
+        payload.pop('email')
+        headers, body = _build_request(event_type='user.deleted', payload=payload)
+        response = client.post(WEBHOOK_PATH, headers=headers, data=body)
+
+        assert response.status_code == 200
+        assert db.get_admin_by_aegis_uuid(USER_UUID) is None
+
+    def test_event_id_field_is_tolerated(self, webhook_client):
+        """
+        The additive event_id field (added 2026-07-26) must not break parsing.
+        Aegis is now stamping this on all events for dedup.
+        """
+        client, db = webhook_client
+        self._seed_admin(db)
+
+        headers, body = _build_request(
+            event_type='user.deleted',
+            payload=self._deleted_payload(event_id='019200aa-bbcc-7000-8000-abcdef012345'),
+        )
+        response = client.post(WEBHOOK_PATH, headers=headers, data=body)
+
+        assert response.status_code == 200
+        assert db.get_admin_by_aegis_uuid(USER_UUID) is None
+
+    def test_deletion_ignored_when_email_not_on_allowlist(self, webhook_client):
+        """
+        Allowlist gates provisioning only. A user.deleted event for an admin
+        whose email is not on the allowlist should still remove the row —
+        the allowlist can change independently of the row's existence.
+        """
+        client, db = webhook_client
+        # Seed an admin whose email is NOT on the allowlist (created before
+        # some hypothetical allowlist edit that removed them).
+        self._seed_admin(db, aegis_uuid=OTHER_USER_UUID, email=DENIED_EMAIL)
+        assert db.get_admin_by_aegis_uuid(OTHER_USER_UUID) is not None
+
+        headers, body = _build_request(
+            event_type='user.deleted',
+            payload=self._deleted_payload(user_uuid=OTHER_USER_UUID, email=DENIED_EMAIL),
+        )
+        response = client.post(WEBHOOK_PATH, headers=headers, data=body)
+
+        assert response.status_code == 200
+        assert db.get_admin_by_aegis_uuid(OTHER_USER_UUID) is None
+
+    def test_invalid_signature_does_not_delete(self, webhook_client):
+        """user.deleted uses the same HMAC scheme — a bad signature must not delete."""
+        client, db = webhook_client
+        self._seed_admin(db)
+
+        headers, body = _build_request(
+            event_type='user.deleted',
+            payload=self._deleted_payload(),
+            signature_override='sha256=deadbeef',
+        )
+        response = client.post(WEBHOOK_PATH, headers=headers, data=body)
+        assert response.status_code == 401
+        assert db.get_admin_by_aegis_uuid(USER_UUID) is not None
