@@ -29,10 +29,17 @@ byteforge-loki-logging @ git+https://${CR_PAT}@github.com/jmazzahacks/byteforge-
 api-gatekeeper-models @ git+https://github.com/jmazzahacks/api-gatekeeper-models.git@v0.7.0
 
 # Aegis client (bearer token introspection via /api/auth/me).
-# Pinned to the "v2.0.0" commit (phase-3 UUID-only contract). The client
-# repo advertises version = "2.0.0" in its pyproject but the maintainer
-# forgot to cut a matching git tag, so we pin the SHA to keep the build
-# reproducible. Once a v2.0.0 tag lands, switch this back to @v2.0.0.
-# Version 2.0.0 REQUIRES the contracted Aegis backend — do not run mixed
-# versions. Transitively pins byteforge-aegis-models @ v2.0.0.
-byteforge-aegis-client-python @ git+https://github.com/jmazzahacks/byteforge-aegis-client-python.git@bf50171911c501621eb7f9b770bacc4e93764f72
+# Pinned to v2.6.0; transitively pulls byteforge-aegis-models @ v2.5.0.
+# Two webhook-signing fixes vs. v2.0.0 landed in models v2.5.0 and both
+# are the reason we're upgrading (closes ticket fff720a8):
+#   - WebhookVerifier.verify() rejects header/body event_type mismatches
+#     (unsigned X-Aegis-Event header type-confusion replay).
+#   - WebhookVerifier.verify() hex-validates the signature header before
+#     hmac.compare_digest, closing an unauthenticated 500 caused by
+#     non-ASCII bytes in X-Aegis-Signature.
+# We use WebhookVerifier from byteforge_aegis_models in
+# src/blueprints/aegis_webhook.py — models v2.5.0+ is a hard requirement.
+# Not moving to v3.x: v3.0.0 changed the request_email_change signature
+# (client-side breaking), which we don't call today but no reason to
+# take the churn.
+byteforge-aegis-client-python @ git+https://github.com/jmazzahacks/byteforge-aegis-client-python.git@v2.6.0

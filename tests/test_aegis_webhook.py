@@ -40,10 +40,17 @@ def _build_request(
     timestamp: str = None,
     signature_override: str = None,
 ):
-    """Produce (headers, body_bytes) for a webhook request."""
+    """
+    Produce (headers, body_bytes) for a webhook request.
+
+    The default payload's `event_type` matches the header, because
+    WebhookVerifier (post-fff720a8) rejects header/body event_type
+    disagreement. Tests that want to construct a mismatch on purpose must
+    pass an explicit `payload` dict.
+    """
     if payload is None:
         payload = {
-            'event_type': 'user.verified',
+            'event_type': event_type,
             'site_uuid': SITE_UUID,
             'user_uuid': USER_UUID,
             'email': ALLOWED_EMAIL,
@@ -175,7 +182,14 @@ class TestEventTypeFiltering:
         assert response.get_json()['received'] is True
         assert db.get_admin_by_aegis_uuid(USER_UUID) is None
 
-    def test_missing_event_type_header_is_ignored(self, webhook_client):
+    def test_missing_event_type_header_returns_401(self, webhook_client):
+        """
+        Post-fff720a8: WebhookVerifier requires X-Aegis-Event to be present
+        (it cross-checks against the signed body's event_type). A missing
+        header is a malformed request, not a silent no-op — 401 makes the
+        rejection visible in Loki so operators can see something odd is
+        posting to /api/webhooks/aegis.
+        """
         client, db = webhook_client
         _, body = _build_request()
         timestamp = str(int(time.time()))
@@ -186,14 +200,22 @@ class TestEventTypeFiltering:
         }
         response = client.post(WEBHOOK_PATH, headers=headers, data=body)
 
-        assert response.status_code == 200
+        assert response.status_code == 401
         assert db.get_admin_by_aegis_uuid(USER_UUID) is None
 
 
 class TestPayloadValidation:
     """Malformed payloads are rejected with 400."""
 
-    def test_invalid_json_returns_400(self, webhook_client):
+    def test_invalid_json_returns_401(self, webhook_client):
+        """
+        Verify-first design: pre-verification failures — including a body
+        that can't be JSON-parsed for the header/body match check — collapse
+        to 401 so unauthenticated callers can't probe status codes. Even a
+        correctly-signed non-JSON body fails inside the verifier (its
+        _header_matches_body can't extract an event_type to compare) and
+        never reaches the handler's post-verify parse.
+        """
         client, _ = webhook_client
         bad_body = b'not json'
         timestamp = str(int(time.time()))
@@ -205,7 +227,7 @@ class TestPayloadValidation:
         }
         response = client.post(WEBHOOK_PATH, headers=headers, data=bad_body)
 
-        assert response.status_code == 400
+        assert response.status_code == 401
 
     def test_missing_user_uuid_returns_400(self, webhook_client):
         client, _ = webhook_client
@@ -606,3 +628,68 @@ class TestUserDeleted:
         response = client.post(WEBHOOK_PATH, headers=headers, data=body)
         assert response.status_code == 401
         assert db.get_admin_by_aegis_uuid(USER_UUID) is not None
+
+
+class TestSecurityRegressions:
+    """
+    Ticket fff720a8: signature covers "{timestamp}.{raw_body}" only, so
+    the X-Aegis-Event header is UNSIGNED. WebhookVerifier (v2.5.0+) rejects
+    header/body event_type disagreement, and (v2.6.0+) rejects non-hex
+    signature values before hmac.compare_digest can TypeError. Both are
+    regression-tested here so a future refactor away from the library
+    can't quietly re-open them.
+    """
+
+    def _seed_admin(self, db, aegis_uuid=USER_UUID, email=ALLOWED_EMAIL):
+        from api_gatekeeper_models import ConsoleAdmin
+        admin = ConsoleAdmin.create_new(email=email, aegis_uuid=aegis_uuid)
+        return db.create_admin(admin)
+
+    def test_header_body_event_type_mismatch_returns_401(self, webhook_client):
+        """
+        A captured user.verified delivery replayed with X-Aegis-Event
+        rewritten to user.deleted (signature still valid, timestamp still
+        fresh) must NOT be routed to _handle_user_deleted.
+        """
+        client, db = webhook_client
+        seeded = self._seed_admin(db)
+        assert db.get_admin_by_aegis_uuid(USER_UUID) is not None
+
+        # Body says user.verified; header claims user.deleted. Sign the body
+        # correctly (the attacker has a valid captured signature).
+        payload = {
+            'event_type': 'user.verified',
+            'site_uuid': SITE_UUID,
+            'user_uuid': USER_UUID,
+            'email': ALLOWED_EMAIL,
+            'timestamp': int(time.time()),
+        }
+        body = json.dumps(payload, separators=(',', ':')).encode('utf-8')
+        timestamp = str(int(time.time()))
+        headers = {
+            'Content-Type': 'application/json',
+            'X-Aegis-Event': 'user.deleted',  # attacker rewrites the unsigned header
+            'X-Aegis-Signature': _sign(WEBHOOK_SECRET, timestamp, body),
+            'X-Aegis-Timestamp': timestamp,
+        }
+        response = client.post(WEBHOOK_PATH, headers=headers, data=body)
+
+        assert response.status_code == 401
+        # And critically: the admin row is intact — the forged delete did NOT run.
+        assert db.get_admin_by_aegis_uuid(USER_UUID) is not None
+        assert db.get_admin_by_aegis_uuid(USER_UUID).admin_id == seeded.admin_id
+
+    def test_non_ascii_signature_returns_401_not_500(self, webhook_client):
+        """
+        A single non-ASCII byte in X-Aegis-Signature previously reached
+        hmac.compare_digest and raised TypeError — an unauthenticated 500
+        on any receiver that used our own verifier or aegis-models < 2.6.0.
+        The library now hex-validates first; assert we get a clean 401.
+        """
+        client, _ = webhook_client
+        # 64 non-ASCII chars — fails the [0-9a-fA-F]{64} pre-check.
+        non_ascii_sig = 'sha256=' + ('é' * 64)
+        headers, body = _build_request(signature_override=non_ascii_sig)
+        response = client.post(WEBHOOK_PATH, headers=headers, data=body)
+
+        assert response.status_code == 401

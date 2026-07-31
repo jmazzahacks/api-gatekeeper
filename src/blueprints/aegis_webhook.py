@@ -13,6 +13,13 @@ Envelope: Aegis phase-3 (UUID-only contract). Payloads carry `user_uuid`
 and `site_uuid`; the pre-contract `user_id`/`site_id` integer keys are
 gone. The additive `event_id` field (dedup key, added 2026-07-26) is
 tolerated but not currently consumed.
+
+Signature verification is delegated to `byteforge_aegis_models.WebhookVerifier`
+so the crypto stays in one place. That verifier's `verify()` enforces
+freshness, hex-well-formedness on the signature header, HMAC match, AND
+that the unsigned `X-Aegis-Event` header agrees with the signed body's
+`event_type`. See ticket fff720a8 for the header-body type-confusion
+attack that motivated the last check.
 """
 import json
 import logging
@@ -20,10 +27,11 @@ import uuid as uuid_mod
 from typing import List, Optional, Tuple
 
 import psycopg2
+from byteforge_aegis_models import WebhookVerifier
 from flask import Blueprint, Response, request, jsonify, current_app
 
 from api_gatekeeper_models import ConsoleAdmin
-from src.utils import verify_aegis_webhook_signature, is_email_allowed
+from src.utils import is_email_allowed
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +41,9 @@ WEBHOOK_PATH = '/api/webhooks/aegis'
 
 HANDLED_EVENT_TYPES = frozenset({'user.verified', 'user.deleted'})
 
+# Stateless; safe to construct once per process.
+_VERIFIER = WebhookVerifier()
+
 
 @aegis_webhook_bp.route(WEBHOOK_PATH, methods=['POST'])
 def handle_aegis_webhook() -> Tuple[Response, int]:
@@ -41,27 +52,70 @@ def handle_aegis_webhook() -> Tuple[Response, int]:
 
     Returns 2xx for all cases Aegis shouldn't retry on (including allowlist
     rejections, unhandled event types, and idempotent no-ops). Returns 401
-    for invalid signatures, 400 for malformed payloads, and 503 if the
-    handler is not configured (so Aegis gives up rather than retrying
-    into a misconfiguration).
+    for anything that fails pre-verification (bad/missing signature, stale
+    timestamp, missing required header, header/body event_type mismatch,
+    non-UTF-8 or non-JSON body — all folded together so unauthenticated
+    callers can't probe status codes to distinguish failure modes), 400
+    for post-verification payload-shape problems (missing user_uuid /
+    email), and 503 if the handler is not configured (so Aegis gives up
+    rather than retrying into a misconfiguration).
     """
     webhook_secret = current_app.config.get('AEGIS_WEBHOOK_SECRET')
     if not webhook_secret:
         logger.error("AEGIS_WEBHOOK_SECRET not configured; rejecting webhook")
         return jsonify({'error': 'Webhook handler not configured'}), 503
 
-    signature = request.headers.get('X-Aegis-Signature', '')
-    timestamp = request.headers.get('X-Aegis-Timestamp', '')
     raw_body = request.get_data()  # bytes; do not decode before signature check
+    body_len = len(raw_body)
 
-    if not verify_aegis_webhook_signature(webhook_secret, signature, timestamp, raw_body):
-        logger.warning("Invalid Aegis webhook signature", extra={
-            'has_signature': bool(signature),
-            'has_timestamp': bool(timestamp),
+    # Verify FIRST — attacker bytes reach the crypto layer before any parser.
+    # `errors='replace'` keeps this branch total; non-UTF-8 bytes re-encode
+    # differently and cause a signature mismatch, so bad encoding folds
+    # into 401 along with every other pre-verify failure (no unauthenticated
+    # status-code oracle to probe).
+    raw_body_text = raw_body.decode('utf-8', errors='replace')
+
+    try:
+        parsed_headers = _VERIFIER.verify_payload(
+            secret=webhook_secret,
+            raw_headers=dict(request.headers),
+            payload_body=raw_body_text,
+        )
+    except ValueError as exc:
+        # Generic response body — the ValueError string can contain the
+        # attacker-supplied header value (e.g. bad X-Aegis-Timestamp), and
+        # there's no reason to reflect that. Full detail lives in the log.
+        logger.warning("Aegis webhook missing or invalid required header", extra={
+            'reason': str(exc),
+            'body_len': body_len,
+        })
+        return jsonify({'error': 'Missing or invalid required header'}), 401
+
+    if parsed_headers is None:
+        logger.warning("Aegis webhook rejected by verifier", extra={
+            'body_len': body_len,
+            'event_type_header': request.headers.get('X-Aegis-Event', ''),
         })
         return jsonify({'error': 'Invalid signature'}), 401
 
-    event_type = request.headers.get('X-Aegis-Event', '')
+    # Post-verification: signature valid, freshness OK, body is a JSON dict
+    # with a string event_type equal to the (also-verified) header value.
+    # The library already parsed the body once inside _header_matches_body,
+    # so this cannot realistically fail — the branch survives only as a
+    # tripwire for the day the library's contract changes underneath us.
+    try:
+        payload = json.loads(raw_body_text) if raw_body_text else {}
+    except json.JSONDecodeError:
+        logger.error("Aegis webhook: post-verify JSON parse failed — library invariant broken", extra={
+            'body_len': body_len,
+        })
+        return jsonify({'error': 'Invalid JSON payload'}), 500
+
+    # Dispatch on the body's event_type — the signed value. verify_payload
+    # already guarantees the header agrees with it, but branching on the
+    # body means a future refactor that drops or changes the verifier
+    # can't silently reintroduce header-based routing.
+    event_type = payload.get('event_type', '')
     if event_type not in HANDLED_EVENT_TYPES:
         logger.info("Ignoring unhandled Aegis event", extra={
             'event_type': event_type,
@@ -71,22 +125,12 @@ def handle_aegis_webhook() -> Tuple[Response, int]:
             'message': f'Event type {event_type} not processed',
         }), 200
 
-    body_len = len(raw_body)
-    try:
-        payload = json.loads(raw_body) if raw_body else {}
-    except json.JSONDecodeError:
-        logger.warning("Aegis webhook payload was not valid JSON", extra={
-            'body_len': body_len,
-            'event_type': event_type,
-        })
-        return jsonify({'error': 'Invalid JSON payload'}), 400
-
-    raw_uuid = payload.get('user_uuid') if isinstance(payload, dict) else None
+    raw_uuid = payload.get('user_uuid')
     # event_id is Aegis's dedup key (uuidv7, additive on all events as of 2026-07-26).
     # We don't consume it for dedup — outcome-idempotent by design — but we log it
     # so operators can correlate our processing with Aegis's delivery log.
-    event_id = payload.get('event_id') if isinstance(payload, dict) else None
-    payload_keys = sorted(payload.keys()) if isinstance(payload, dict) else []
+    event_id = payload.get('event_id')
+    payload_keys = sorted(payload.keys())
 
     if not isinstance(raw_uuid, str) or not raw_uuid:
         logger.warning("Aegis webhook missing or invalid user_uuid", extra={
