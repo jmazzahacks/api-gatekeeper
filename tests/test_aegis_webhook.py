@@ -2,8 +2,8 @@
 End-to-end tests for the Aegis webhook endpoint.
 
 Exercises the signature verification, event-type filtering, payload validation,
-allowlist gating, and idempotent provisioning (including concurrent-delivery
-race safety) against a real test database.
+and idempotent provisioning (including concurrent-delivery race safety) against
+a real test database.
 
 Wire shape: Aegis phase-3 (UUID-only contract) — payloads carry `user_uuid`
 and `site_uuid`; the pre-contract `user_id`/`site_id` integer keys are gone.
@@ -21,7 +21,6 @@ from src.blueprints.aegis_webhook import WEBHOOK_PATH
 
 WEBHOOK_SECRET = 'unit_test_webhook_secret_abc123'
 ALLOWED_EMAIL = 'admin@example.com'
-DENIED_EMAIL = 'stranger@example.com'
 SITE_UUID = '11111111-1111-1111-1111-111111111111'
 USER_UUID = 'b8e9dfc0-5ba5-4bbd-a314-cb342eac0f71'
 OTHER_USER_UUID = 'aaaaaaaa-1111-2222-3333-444444444444'
@@ -72,9 +71,8 @@ def _build_request(
 
 @pytest.fixture
 def webhook_client(clean_db, monkeypatch):
-    """Flask test client with webhook secret and allowlist configured."""
+    """Flask test client with webhook secret configured."""
     monkeypatch.setenv('AEGIS_WEBHOOK_SECRET', WEBHOOK_SECRET)
-    monkeypatch.setenv('AEGIS_ADMIN_EMAILS', f'{ALLOWED_EMAIL},other-admin@example.com')
 
     hmac_handler = HMACHandler(clean_db, nonce_storage={})
     app = create_app(db=clean_db, redis_client=None, hmac_handler=hmac_handler, rate_limiter=None)
@@ -87,26 +85,12 @@ def webhook_client(clean_db, monkeypatch):
 def webhook_client_no_secret(clean_db, monkeypatch):
     """Flask test client with NO webhook secret configured (misconfiguration case)."""
     monkeypatch.delenv('AEGIS_WEBHOOK_SECRET', raising=False)
-    monkeypatch.setenv('AEGIS_ADMIN_EMAILS', ALLOWED_EMAIL)
 
     hmac_handler = HMACHandler(clean_db, nonce_storage={})
     app = create_app(db=clean_db, redis_client=None, hmac_handler=hmac_handler, rate_limiter=None)
     app.config['TESTING'] = True
     with app.test_client() as client:
         yield client
-
-
-@pytest.fixture
-def webhook_client_no_allowlist(clean_db, monkeypatch):
-    """Flask test client with webhook secret but empty allowlist."""
-    monkeypatch.setenv('AEGIS_WEBHOOK_SECRET', WEBHOOK_SECRET)
-    monkeypatch.delenv('AEGIS_ADMIN_EMAILS', raising=False)
-
-    hmac_handler = HMACHandler(clean_db, nonce_storage={})
-    app = create_app(db=clean_db, redis_client=None, hmac_handler=hmac_handler, rate_limiter=None)
-    app.config['TESTING'] = True
-    with app.test_client() as client:
-        yield client, clean_db
 
 
 class TestWebhookAuth:
@@ -296,45 +280,6 @@ class TestPayloadValidation:
         })
         response = client.post(WEBHOOK_PATH, headers=headers, data=body)
         assert response.status_code == 400
-
-
-class TestAllowlistGating:
-    """Only emails on the allowlist are provisioned."""
-
-    def test_denied_email_returns_200_but_no_record(self, webhook_client):
-        client, db = webhook_client
-        headers, body = _build_request(payload={
-            'event_type': 'user.verified',
-            'user_uuid': OTHER_USER_UUID,
-            'email': DENIED_EMAIL,
-            'timestamp': int(time.time()),
-        })
-        response = client.post(WEBHOOK_PATH, headers=headers, data=body)
-
-        assert response.status_code == 200
-        assert db.get_admin_by_aegis_uuid(OTHER_USER_UUID) is None
-
-    def test_empty_allowlist_denies_all(self, webhook_client_no_allowlist):
-        client, db = webhook_client_no_allowlist
-        headers, body = _build_request()
-        response = client.post(WEBHOOK_PATH, headers=headers, data=body)
-
-        assert response.status_code == 200
-        assert db.get_admin_by_aegis_uuid(USER_UUID) is None
-
-    def test_allowlist_matching_is_case_insensitive(self, webhook_client):
-        client, db = webhook_client
-        headers, body = _build_request(payload={
-            'event_type': 'user.verified',
-            'user_uuid': USER_UUID,
-            'email': ALLOWED_EMAIL.upper(),
-            'timestamp': int(time.time()),
-        })
-        response = client.post(WEBHOOK_PATH, headers=headers, data=body)
-
-        assert response.status_code == 200
-        # Provisioning succeeded -- admin record exists
-        assert db.get_admin_by_aegis_uuid(USER_UUID) is not None
 
 
 class TestProvisioning:
@@ -593,27 +538,6 @@ class TestUserDeleted:
 
         assert response.status_code == 200
         assert db.get_admin_by_aegis_uuid(USER_UUID) is None
-
-    def test_deletion_ignored_when_email_not_on_allowlist(self, webhook_client):
-        """
-        Allowlist gates provisioning only. A user.deleted event for an admin
-        whose email is not on the allowlist should still remove the row —
-        the allowlist can change independently of the row's existence.
-        """
-        client, db = webhook_client
-        # Seed an admin whose email is NOT on the allowlist (created before
-        # some hypothetical allowlist edit that removed them).
-        self._seed_admin(db, aegis_uuid=OTHER_USER_UUID, email=DENIED_EMAIL)
-        assert db.get_admin_by_aegis_uuid(OTHER_USER_UUID) is not None
-
-        headers, body = _build_request(
-            event_type='user.deleted',
-            payload=self._deleted_payload(user_uuid=OTHER_USER_UUID, email=DENIED_EMAIL),
-        )
-        response = client.post(WEBHOOK_PATH, headers=headers, data=body)
-
-        assert response.status_code == 200
-        assert db.get_admin_by_aegis_uuid(OTHER_USER_UUID) is None
 
     def test_invalid_signature_does_not_delete(self, webhook_client):
         """user.deleted uses the same HMAC scheme — a bad signature must not delete."""

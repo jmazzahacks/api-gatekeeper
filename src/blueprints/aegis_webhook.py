@@ -2,8 +2,9 @@
 Aegis webhook endpoint for console-admin lifecycle events.
 
 Two events are handled:
-- `user.verified` — provisions matching users as console admins, gated by the
-  AEGIS_ADMIN_EMAILS allowlist. Idempotent on aegis_uuid via ON CONFLICT.
+- `user.verified` — provisions the user as a console admin. Aegis is the sole
+  authority on who counts as an admin — verified HMAC + valid payload is
+  sufficient. Idempotent on aegis_uuid via ON CONFLICT.
 - `user.deleted` — removes the matching console_admins row (keyed on
   aegis_uuid == user_uuid). Idempotent: an unknown uuid is a 200 no-op.
   No allowlist check on deletion — a user removed upstream should be
@@ -31,7 +32,6 @@ from byteforge_aegis_models import WebhookVerifier
 from flask import Blueprint, Response, request, jsonify, current_app
 
 from api_gatekeeper_models import ConsoleAdmin
-from src.utils import is_email_allowed
 
 logger = logging.getLogger(__name__)
 
@@ -188,19 +188,6 @@ def _handle_user_verified(
             'payload_keys': payload_keys,
         })
         return jsonify({'error': 'Missing or invalid required field: email'}), 400
-
-    allowlist = current_app.config.get('AEGIS_ADMIN_ALLOWLIST', frozenset())
-    if not is_email_allowed(email, allowlist):
-        logger.warning("Aegis webhook: email not on admin allowlist", extra={
-            'email': email,
-            'aegis_uuid': aegis_uuid,
-            'event_id': event_id,
-            'allowlist_configured': len(allowlist) > 0,
-        })
-        return jsonify({
-            'received': True,
-            'message': 'Email not authorized for admin provisioning',
-        }), 200
 
     # Fast path: already provisioned -> idempotent no-op with distinct logging.
     existing = db.get_admin_by_aegis_uuid(aegis_uuid)

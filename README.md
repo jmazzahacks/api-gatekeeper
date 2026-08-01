@@ -97,7 +97,7 @@ The gatekeeper itself is the auth/authz engine for *services it protects via ngi
 
 2. **Public-auth proxy on `/api/auth/*`** — login, register, verify-email, check-verification-token, request-password-reset, reset-password. Aegis requires `X-Tenant-Api-Key` on these six endpoints (so a public client can't impersonate a tenant). The browser must NEVER hold this key, so the gatekeeper proxies the calls and attaches the key server-side from `AEGIS_TENANT_API_KEY`. See `src/auth/aegis_tenant.py` and `src/blueprints/auth.py`.
 
-3. **Webhook-driven admin provisioning** at `/api/webhooks/aegis`. When Aegis fires a `user.verified` webhook, the gatekeeper inserts a row into `console_admins` if-and-only-if the email is in the comma-separated `AEGIS_ADMIN_EMAILS` allowlist. Webhook signature is HMAC-SHA256-verified using `AEGIS_WEBHOOK_SECRET`. Default is closed (empty allowlist = nobody gets provisioned).
+3. **Webhook-driven admin provisioning** at `/api/webhooks/aegis`. When Aegis fires a `user.verified` webhook, the gatekeeper inserts a row into `console_admins`. Aegis is the sole authority on who counts as an admin — verified HMAC + valid payload is sufficient. Webhook signature is HMAC-SHA256-verified using `AEGIS_WEBHOOK_SECRET`; without the secret set, all deliveries are rejected 401.
 
 4. **Runtime config at `/api/config`** — public, no auth, returns `{aegisApiUrl, siteName, siteDomain}` from env vars (`AEGIS_API_URL`, `SITE_NAME`, `SITE_DOMAIN`). The Next.js console fetches this at first paint instead of baking URLs into its bundle, so a single frontend image deploys across tenants. See `src/blueprints/config.py`.
 
@@ -512,8 +512,7 @@ gatekeeper-backend/
 │   │   └── driver.py        # CRUD operations with connection pooling
 │   └── utils/               # Utilities
 │       ├── db_connection.py        # Database connection helper
-│       ├── ip_resolver.py          # Client IP resolution w/ trusted forwarders
-│       └── admin_allowlist.py      # AEGIS_ADMIN_EMAILS parsing
+│       └── ip_resolver.py          # Client IP resolution w/ trusted forwarders
 ├── docs/                    # Documentation
 │   ├── ARCHITECTURE.md      # System architecture
 │   ├── DATABASE_SETUP.md    # Database setup guide
@@ -535,9 +534,9 @@ gatekeeper-backend/
 │   ├── test_authorizer.py / test_auth_handlers.py / test_flask_app.py
 │   ├── test_rate_limiter.py / test_nonce_storage.py / test_ip_resolver.py
 │   ├── test_admin_clients.py / test_admin_routes.py / test_admin_permissions.py
-│   ├── test_admin_allowlist.py / test_console_admin_decorator.py
+│   ├── test_console_admin_decorator.py
 │   ├── test_aegis_authenticator.py / test_auth_proxy.py
-│   ├── test_aegis_webhook.py / test_webhook_verifier.py
+│   ├── test_aegis_webhook.py
 │   └── test_runtime_config.py
 └── dev_scripts/             # Development utilities
     ├── setup_database.py    # Idempotent: creates user/db, applies schema
@@ -585,7 +584,6 @@ These are documented in detail in [env.example](env.example). Without them the d
 - `AEGIS_API_URL`: Aegis base URL (e.g. `https://aegis.example.com`). Required for `/api/admin/*`, `/api/auth/*`, and `/api/config`.
 - `AEGIS_SITE_ID`, `AEGIS_TENANT_API_KEY`: Aegis site ID and per-tenant API key. Required for the `/api/auth/*` public proxy. Treat the key as a secret.
 - `AEGIS_WEBHOOK_SECRET`: HMAC-SHA256 secret Aegis signs `user.verified` webhooks with. Required for `/api/webhooks/aegis` (otherwise every webhook is rejected as unauthorized).
-- `AEGIS_ADMIN_EMAILS`: Comma-separated allowlist of emails authorized to be provisioned as console admins. Default closed — empty means nobody is provisioned.
 - `AEGIS_AUTH_CACHE_TTL_SECONDS`: Positive-cache TTL for resolved bearer tokens (default: `60`). Set to `0` to disable caching.
 
 ### Frontend runtime config (served by `/api/config`)

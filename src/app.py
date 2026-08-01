@@ -21,7 +21,6 @@ from src.auth import Authorizer, HMACHandler, RedisNonceStorage, AegisAuthentica
 from src.utils import (
     get_db_connection,
     parse_trusted_forwarder_ips,
-    parse_admin_allowlist,
     parse_cors_allowlist,
 )
 from src.database.driver import AuthServiceDB
@@ -217,20 +216,11 @@ def create_app(
 
     # Aegis webhook configuration
     webhook_secret = os.environ.get('AEGIS_WEBHOOK_SECRET')
-    admin_allowlist = parse_admin_allowlist(os.environ.get('AEGIS_ADMIN_EMAILS'))
 
     if not webhook_secret:
         logger.warning(
             "AEGIS_WEBHOOK_SECRET not set; Aegis webhook endpoint will reject all deliveries"
         )
-    if not admin_allowlist:
-        logger.warning(
-            "AEGIS_ADMIN_EMAILS not set; no users will be provisioned as console admins"
-        )
-    else:
-        logger.info("Admin provisioning allowlist configured", extra={
-            'allowlist_size': len(admin_allowlist),
-        })
 
     # Aegis bearer-token authentication for the admin console
     aegis_api_url = os.environ.get('AEGIS_API_URL')
@@ -259,7 +249,6 @@ def create_app(
     app.config['TRUSTED_FORWARDER_IPS'] = trusted_ips
     app.config['CORS_ALLOWED_ORIGINS'] = cors_allowlist
     app.config['AEGIS_WEBHOOK_SECRET'] = webhook_secret
-    app.config['AEGIS_ADMIN_ALLOWLIST'] = admin_allowlist
     app.config['AEGIS_AUTHENTICATOR'] = aegis_authenticator
 
     # Frontend runtime config — served by /api/config so a single frontend image
