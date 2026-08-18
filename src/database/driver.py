@@ -490,6 +490,30 @@ class AuthServiceDB:
                 return None
             return Client.from_dict(dict(result))
 
+    def load_client_by_legacy_key_id(self, legacy_key_id: str) -> Optional[Client]:
+        """
+        Load a client by its legacy_key_id (non-UUID string alias).
+
+        Used by the HMAC handler as the fallback resolution path for legacy
+        callers whose Authorization header carries a string identifier rather
+        than a UUID.
+
+        Args:
+            legacy_key_id: Legacy string identifier
+
+        Returns:
+            Client object if found, None otherwise
+        """
+        with self.get_cursor(commit=False, cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                "SELECT * FROM clients WHERE legacy_key_id = %s",
+                (legacy_key_id,)
+            )
+            result = cursor.fetchone()
+            if not result:
+                return None
+            return Client.from_dict(dict(result))
+
     def load_client_by_shared_secret(self, shared_secret: str) -> Optional[Client]:
         """
         Load a client by its shared secret.
@@ -539,14 +563,15 @@ class AuthServiceDB:
                 # Update existing client
                 cursor.execute(
                     """
-                    INSERT INTO clients (client_id, client_name, shared_secret, api_key, status, created_at, updated_at)
-                    VALUES (%(client_id)s, %(client_name)s, %(shared_secret)s, %(api_key)s, %(status)s, %(created_at)s, %(updated_at)s)
+                    INSERT INTO clients (client_id, client_name, shared_secret, api_key, status, legacy_key_id, created_at, updated_at)
+                    VALUES (%(client_id)s, %(client_name)s, %(shared_secret)s, %(api_key)s, %(status)s, %(legacy_key_id)s, %(created_at)s, %(updated_at)s)
                     ON CONFLICT (client_id)
                     DO UPDATE SET
                         client_name = EXCLUDED.client_name,
                         shared_secret = EXCLUDED.shared_secret,
                         api_key = EXCLUDED.api_key,
                         status = EXCLUDED.status,
+                        legacy_key_id = EXCLUDED.legacy_key_id,
                         updated_at = EXCLUDED.updated_at
                     RETURNING client_id
                     """,
@@ -557,8 +582,8 @@ class AuthServiceDB:
                 insert_dict = {k: v for k, v in client_dict.items() if k != 'client_id'}
                 cursor.execute(
                     """
-                    INSERT INTO clients (client_name, shared_secret, api_key, status, created_at, updated_at)
-                    VALUES (%(client_name)s, %(shared_secret)s, %(api_key)s, %(status)s, %(created_at)s, %(updated_at)s)
+                    INSERT INTO clients (client_name, shared_secret, api_key, status, legacy_key_id, created_at, updated_at)
+                    VALUES (%(client_name)s, %(shared_secret)s, %(api_key)s, %(status)s, %(legacy_key_id)s, %(created_at)s, %(updated_at)s)
                     RETURNING client_id
                     """,
                     insert_dict

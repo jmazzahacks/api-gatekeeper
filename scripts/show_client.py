@@ -37,6 +37,8 @@ def show_client_details(client_id: str) -> bool:
         print(f"Client ID:     {client.client_id}")
         print(f"Name:          {client.client_name}")
         print(f"Status:        {client.status.value}")
+        if client.legacy_key_id:
+            print(f"Legacy Key ID: {client.legacy_key_id}")
         print(f"Created:       {format_timestamp(client.created_at)}")
         print(f"Updated:       {format_timestamp(client.updated_at)}")
 

@@ -65,6 +65,7 @@ CREATE TABLE IF NOT EXISTS clients (
     shared_secret TEXT,
     api_key TEXT,
     status TEXT NOT NULL DEFAULT 'active',
+    legacy_key_id TEXT,
     created_at BIGINT NOT NULL DEFAULT extract(epoch from now())::bigint,
     updated_at BIGINT NOT NULL DEFAULT extract(epoch from now())::bigint,
 
@@ -75,6 +76,11 @@ CREATE TABLE IF NOT EXISTS clients (
     CONSTRAINT api_key_unique UNIQUE (api_key),
     CONSTRAINT shared_secret_unique UNIQUE (shared_secret)
 );
+
+-- Idempotent migration for installs created before legacy_key_id existed.
+-- Fresh installs skip past this no-op (CREATE TABLE above already includes
+-- the column); pre-existing installs get the column added.
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS legacy_key_id TEXT;
 
 -- Index for client name lookups
 CREATE INDEX IF NOT EXISTS idx_clients_name ON clients(client_name);
@@ -91,6 +97,13 @@ CREATE INDEX IF NOT EXISTS idx_clients_shared_secret ON clients(shared_secret)
 CREATE INDEX IF NOT EXISTS idx_clients_status ON clients(status)
     WHERE status = 'active';
 
+-- Partial unique index on legacy_key_id: only enforces uniqueness when set.
+-- Nullable by design — new clients have no legacy alias, only pre-existing
+-- HMAC callers that pre-date the UUID contract need one.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_clients_legacy_key_id
+    ON clients(legacy_key_id)
+    WHERE legacy_key_id IS NOT NULL;
+
 -- Comments for documentation
 COMMENT ON TABLE clients IS 'API clients with authentication credentials (shared secrets and/or API keys)';
 COMMENT ON COLUMN clients.client_id IS 'Unique identifier for the client';
@@ -98,6 +111,7 @@ COMMENT ON COLUMN clients.client_name IS 'Human-readable name for the client';
 COMMENT ON COLUMN clients.shared_secret IS 'Secret key for HMAC signature authentication (optional)';
 COMMENT ON COLUMN clients.api_key IS 'API key for simple authentication (optional)';
 COMMENT ON COLUMN clients.status IS 'Client account status: active, suspended, or revoked';
+COMMENT ON COLUMN clients.legacy_key_id IS 'Optional non-UUID alternate identifier for legacy HMAC callers whose client_id header is a string rather than a UUID (e.g. mobile apps built against rba-auth-service). Unique when set. New clients should leave NULL.';
 COMMENT ON COLUMN clients.created_at IS 'Unix timestamp (seconds since epoch) when client was created';
 COMMENT ON COLUMN clients.updated_at IS 'Unix timestamp (seconds since epoch) when client was last updated';
 

@@ -24,9 +24,9 @@ def main():
     """Main function to list all clients."""
     load_dotenv()
 
-    print("=" * 100)
+    print("=" * 128)
     print("API Clients")
-    print("=" * 100)
+    print("=" * 128)
 
     db = get_db_connection(verbose=False)
 
@@ -42,8 +42,8 @@ def main():
         print(f"\nTotal clients: {len(clients)}\n")
 
         # Print header
-        print(f"{'Client ID':<38} {'Name':<25} {'API Key':<15} {'Secret':<15} {'Status':<10}")
-        print("-" * 100)
+        print(f"{'Client ID':<38} {'Name':<25} {'API Key':<15} {'Secret':<15} {'Status':<10} {'Legacy Key ID':<20}")
+        print("-" * 128)
 
         # Print each client
         for client in clients:
@@ -52,10 +52,11 @@ def main():
             api_key_display = format_credential(client.api_key)
             secret_display = format_credential(client.shared_secret)
             status_display = client.status.value
+            legacy_display = client.legacy_key_id or "-"
 
-            print(f"{client_id_short:<38} {name_truncated:<25} {api_key_display:<15} {secret_display:<15} {status_display:<10}")
+            print(f"{client_id_short:<38} {name_truncated:<25} {api_key_display:<15} {secret_display:<15} {status_display:<10} {legacy_display:<20}")
 
-        print("\n" + "=" * 100)
+        print("\n" + "=" * 128)
         print("Legend:")
         print("  API Key: Shows first 8 characters (truncated for security)")
         print("  Secret: Shows first 8 characters (truncated for security)")

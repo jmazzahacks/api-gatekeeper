@@ -11,6 +11,7 @@ import secrets
 from dotenv import load_dotenv
 
 from src.utils import get_db_connection
+from src.auth.hmac_handler import _looks_like_uuid
 from api_gatekeeper_models import Client, ClientStatus
 
 
@@ -126,6 +127,31 @@ def main():
             shared_secret = generate_shared_secret()
             print(f"Generated shared secret: {shared_secret}")
 
+    # Legacy alias: only meaningful for HMAC clients whose caller was built
+    # against the old rba-auth-service and cannot be updated to send a UUID.
+    # New/well-behaved clients leave this blank.
+    legacy_key_id = None
+    if use_shared_secret:
+        if get_yes_no(
+            "\nSet a legacy_key_id (only for callers migrated from rba-auth-service)?",
+            default=False
+        ):
+            legacy_key_id = get_input("Legacy key ID (e.g. 'podcastguru-mobile')")
+            if not legacy_key_id:
+                print("Error: Legacy key ID cannot be empty if provided")
+                sys.exit(1)
+            # A UUID-shaped legacy_key_id would be routed to the UUID lookup
+            # path (clients.client_id PK), never to legacy_key_id — so the
+            # alias would be permanently unreachable via HMAC. Reject early.
+            if _looks_like_uuid(legacy_key_id):
+                print(
+                    "Error: Legacy key ID cannot be a UUID string — the HMAC handler "
+                    "would route it to the client_id (UUID) lookup path, not to "
+                    "legacy_key_id. Use a distinctive non-UUID string "
+                    "(e.g. 'podcastguru-mobile')."
+                )
+                sys.exit(1)
+
     # Get client status
     print("\n" + "=" * 60)
     print("Client Status")
@@ -146,6 +172,8 @@ def main():
         print(f"API Key: {api_key}")
     if shared_secret:
         print(f"Shared Secret: {shared_secret}")
+    if legacy_key_id:
+        print(f"Legacy Key ID: {legacy_key_id}")
     print(f"Status: {status.value}")
 
     if not get_yes_no("\nCreate this client?", default=True):
@@ -160,7 +188,8 @@ def main():
             client_name=client_name,
             api_key=api_key,
             shared_secret=shared_secret,
-            status=status
+            status=status,
+            legacy_key_id=legacy_key_id
         )
 
         client_id = db.save_client(client)
@@ -174,6 +203,8 @@ def main():
             print(f"API Key: {api_key}")
         if shared_secret:
             print(f"Shared Secret: {shared_secret}")
+        if legacy_key_id:
+            print(f"Legacy Key ID: {legacy_key_id}")
         print(f"Status: {status.value}")
         print("\nIMPORTANT: Save these credentials securely. They cannot be retrieved later.")
         print("\nNext steps:")

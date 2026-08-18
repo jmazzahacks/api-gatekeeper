@@ -175,6 +175,87 @@ class TestClientCRUD:
         result = clean_db.delete_client('00000000-0000-0000-0000-000000000000')
         assert result is False
 
+    def test_save_and_load_client_with_legacy_key_id(self, clean_db):
+        """A client with legacy_key_id round-trips through save + reload."""
+        client = Client.create_new(
+            client_name='Legacy HMAC Client',
+            shared_secret='legacy-secret',
+            legacy_key_id='rba-legacy-mobile'
+        )
+        client_id = clean_db.save_client(client)
+
+        loaded = clean_db.load_client_by_id(client_id)
+        assert loaded is not None
+        assert loaded.legacy_key_id == 'rba-legacy-mobile'
+
+    def test_save_client_without_legacy_key_id_leaves_it_none(self, clean_db):
+        """Clients created without a legacy_key_id have it as None."""
+        client = Client.create_new(
+            client_name='Modern Client',
+            shared_secret='modern-secret'
+        )
+        client_id = clean_db.save_client(client)
+
+        loaded = clean_db.load_client_by_id(client_id)
+        assert loaded is not None
+        assert loaded.legacy_key_id is None
+
+    def test_load_client_by_legacy_key_id_found(self, clean_db):
+        """load_client_by_legacy_key_id resolves the client by its string alias."""
+        client = Client.create_new(
+            client_name='Podcast Guru Mobile',
+            shared_secret='pg-secret',
+            legacy_key_id='podcastguru-mobile'
+        )
+        clean_db.save_client(client)
+
+        loaded = clean_db.load_client_by_legacy_key_id('podcastguru-mobile')
+        assert loaded is not None
+        assert loaded.client_name == 'Podcast Guru Mobile'
+        assert loaded.legacy_key_id == 'podcastguru-mobile'
+
+    def test_load_client_by_legacy_key_id_not_found(self, clean_db):
+        """load_client_by_legacy_key_id returns None for unknown alias."""
+        loaded = clean_db.load_client_by_legacy_key_id('does-not-exist')
+        assert loaded is None
+
+    def test_legacy_key_id_unique_constraint(self, clean_db):
+        """Two clients cannot share the same legacy_key_id."""
+        import psycopg2
+        client_a = Client.create_new(
+            client_name='Client A',
+            shared_secret='sec-a',
+            legacy_key_id='shared-alias'
+        )
+        client_b = Client.create_new(
+            client_name='Client B',
+            shared_secret='sec-b',
+            legacy_key_id='shared-alias'
+        )
+        clean_db.save_client(client_a)
+        with pytest.raises(psycopg2.errors.UniqueViolation):
+            clean_db.save_client(client_b)
+
+    def test_legacy_key_id_upsert_updates_alias(self, clean_db):
+        """Saving with a different legacy_key_id on the same UUID replaces the alias."""
+        client = Client.create_new(
+            client_name='Client A',
+            shared_secret='sec',
+            legacy_key_id='original-alias'
+        )
+        client_id = clean_db.save_client(client)
+
+        updated = Client.create_new(
+            client_name='Client A',
+            shared_secret='sec',
+            legacy_key_id='updated-alias',
+            client_id=client_id
+        )
+        clean_db.save_client(updated)
+
+        loaded = clean_db.load_client_by_id(client_id)
+        assert loaded.legacy_key_id == 'updated-alias'
+
     def test_client_status_filtering(self, clean_db):
         """Test that client status is properly stored and retrieved."""
         active = Client.create_new(client_name='Active', api_key='key-1', status=ClientStatus.ACTIVE)

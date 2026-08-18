@@ -5,6 +5,7 @@ CRITICAL: All tests use the api_auth_admin_test database via fixtures.
 import pytest
 import time
 from src.auth import APIKeyHandler, HMACHandler, DatabaseSecretProvider, RequestSigner
+from src.auth.hmac_handler import _looks_like_uuid
 from api_gatekeeper_models import Client, ClientStatus
 
 
@@ -226,6 +227,24 @@ class TestDatabaseSecretProvider:
 
         assert secret is None
 
+    def test_get_secret_by_legacy_key_id(self, clean_db):
+        """A non-UUID identifier resolves the client via legacy_key_id."""
+        client = Client.create_new(
+            client_name='Legacy HMAC Client',
+            shared_secret='legacy-secret',
+            legacy_key_id='rba-legacy-mobile',
+            status=ClientStatus.ACTIVE
+        )
+        clean_db.save_client(client)
+
+        provider = DatabaseSecretProvider(clean_db)
+        assert provider.get_secret('rba-legacy-mobile') == 'legacy-secret'
+
+    def test_get_secret_unknown_legacy_key_id(self, clean_db):
+        """Non-UUID identifier with no legacy_key_id match returns None."""
+        provider = DatabaseSecretProvider(clean_db)
+        assert provider.get_secret('never-registered-alias') is None
+
 
 class TestHMACHandler:
     """Test HMAC signature validation."""
@@ -419,6 +438,255 @@ class TestHMACHandler:
 
         assert client is not None
         assert client.client_id == hmac_client.client_id
+
+
+class TestLooksLikeUUID:
+    """Guard the strict-canonical UUID recognizer used to dispatch HMAC lookup."""
+
+    def test_canonical_uuid_is_accepted(self):
+        assert _looks_like_uuid('c0b4b615-2381-48ff-935b-6c56596abda6') is True
+        assert _looks_like_uuid('C0B4B615-2381-48FF-935B-6C56596ABDA6') is True
+
+    def test_non_uuid_strings_rejected(self):
+        assert _looks_like_uuid('podcastguru-mobile') is False
+        assert _looks_like_uuid('') is False
+        assert _looks_like_uuid('not-a-uuid') is False
+
+    def test_braces_form_rejected(self):
+        # uuid.UUID accepts this; we do not.
+        assert _looks_like_uuid('{c0b4b615-2381-48ff-935b-6c56596abda6}') is False
+
+    def test_urn_prefix_rejected(self):
+        assert _looks_like_uuid('urn:uuid:c0b4b615-2381-48ff-935b-6c56596abda6') is False
+
+    def test_no_dash_32hex_rejected(self):
+        # uuid.UUID accepts a 32-char no-dash hex; we require the canonical form.
+        assert _looks_like_uuid('c0b4b615238148ff935b6c56596abda6') is False
+
+    def test_non_string_rejected(self):
+        assert _looks_like_uuid(None) is False
+
+
+class TestDatabaseSecretProviderTLSCache:
+    """Verify get_secret stashes the Client for take_last_resolved to hand back."""
+
+    def test_take_last_resolved_returns_client_after_get_secret(self, clean_db):
+        client = Client.create_new(
+            client_name='c', shared_secret='s',
+            legacy_key_id='alias-a', status=ClientStatus.ACTIVE,
+        )
+        clean_db.save_client(client)
+
+        provider = DatabaseSecretProvider(clean_db)
+        secret = provider.get_secret('alias-a')
+        assert secret == 's'
+
+        # take_last_resolved returns the Client whose secret was just returned.
+        stashed = provider.take_last_resolved('alias-a')
+        assert stashed is not None
+        assert stashed.client_id == client.client_id
+
+    def test_take_last_resolved_clears_cache(self, clean_db):
+        client = Client.create_new(
+            client_name='c', shared_secret='s',
+            legacy_key_id='alias-b', status=ClientStatus.ACTIVE,
+        )
+        clean_db.save_client(client)
+
+        provider = DatabaseSecretProvider(clean_db)
+        provider.get_secret('alias-b')
+
+        # First call returns; second call returns None (cache cleared).
+        assert provider.take_last_resolved('alias-b') is not None
+        assert provider.take_last_resolved('alias-b') is None
+
+    def test_take_last_resolved_rejects_mismatched_header(self, clean_db):
+        client = Client.create_new(
+            client_name='c', shared_secret='s',
+            legacy_key_id='alias-c', status=ClientStatus.ACTIVE,
+        )
+        clean_db.save_client(client)
+
+        provider = DatabaseSecretProvider(clean_db)
+        provider.get_secret('alias-c')
+
+        # Asking for a different header returns None (won't hand back the
+        # wrong Client), and still clears whatever was stashed.
+        assert provider.take_last_resolved('some-other-alias') is None
+        assert provider.take_last_resolved('alias-c') is None
+
+    def test_take_last_resolved_before_any_get_secret_returns_none(self, clean_db):
+        provider = DatabaseSecretProvider(clean_db)
+        assert provider.take_last_resolved('anything') is None
+
+
+class TestHMACHandlerLegacyKeyIdDispatch:
+    """Test HMAC handler resolves clients whose header carries a legacy string alias."""
+
+    @pytest.fixture
+    def legacy_hmac_client(self, clean_db):
+        """A client with a legacy_key_id string alias."""
+        client = Client.create_new(
+            client_name='Podcast Guru Mobile',
+            shared_secret='legacy-mobile-secret',
+            legacy_key_id='podcastguru-mobile',
+            status=ClientStatus.ACTIVE
+        )
+        clean_db.save_client(client)
+        return client
+
+    def test_legacy_string_client_id_resolves_and_authenticates(
+        self, clean_db, legacy_hmac_client
+    ):
+        """A non-UUID client_id in the header falls back to legacy_key_id lookup."""
+        signer = RequestSigner(
+            client_id='podcastguru-mobile',
+            secret_key='legacy-mobile-secret'
+        )
+        auth_header = signer.sign_post('/boost/', '{"data": "test"}')
+
+        handler = HMACHandler(clean_db)
+        client = handler.authenticate(
+            auth_header=auth_header,
+            method='POST',
+            path='/boost/',
+            body='{"data": "test"}'
+        )
+
+        assert client is not None
+        assert client.client_id == legacy_hmac_client.client_id
+        assert client.legacy_key_id == 'podcastguru-mobile'
+
+    def test_legacy_string_with_wrong_secret_denies(
+        self, clean_db, legacy_hmac_client
+    ):
+        """Legacy alias resolves the row, but wrong secret still fails HMAC."""
+        signer = RequestSigner(
+            client_id='podcastguru-mobile',
+            secret_key='wrong-secret'
+        )
+        auth_header = signer.sign_post('/boost/', '{"data": "test"}')
+
+        handler = HMACHandler(clean_db)
+        client = handler.authenticate(
+            auth_header=auth_header,
+            method='POST',
+            path='/boost/',
+            body='{"data": "test"}'
+        )
+
+        assert client is None
+
+    def test_unknown_legacy_string_client_id_denies(self, clean_db):
+        """A non-UUID header value with no matching legacy_key_id returns None."""
+        signer = RequestSigner(
+            client_id='never-registered',
+            secret_key='does-not-matter'
+        )
+        auth_header = signer.sign_post('/boost/', '{}')
+
+        handler = HMACHandler(clean_db)
+        client = handler.authenticate(
+            auth_header=auth_header,
+            method='POST',
+            path='/boost/',
+            body='{}'
+        )
+
+        assert client is None
+
+    def test_non_canonical_uuid_form_falls_through_to_legacy(self, clean_db):
+        """
+        A legacy_key_id string that happens to look uuid-ish but isn't the
+        canonical 36-char hyphenated form (e.g. urn:uuid: prefix, braces,
+        32-char no-dash) must be resolvable via the legacy_key_id path.
+        Guards the strict-canonical UUID recognizer.
+        """
+        alias = 'urn:uuid:c0b4b615-2381-48ff-935b-6c56596abda6'
+        client = Client.create_new(
+            client_name='c', shared_secret='s',
+            legacy_key_id=alias, status=ClientStatus.ACTIVE,
+        )
+        clean_db.save_client(client)
+
+        signer = RequestSigner(client_id=alias, secret_key='s')
+        auth_header = signer.sign_post('/x/', '{}')
+
+        handler = HMACHandler(clean_db)
+        result = handler.authenticate(
+            auth_header=auth_header, method='POST', path='/x/', body='{}'
+        )
+        assert result is not None
+        assert result.legacy_key_id == alias
+
+    def test_uuid_shaped_header_never_touches_legacy_path(
+        self, clean_db, legacy_hmac_client
+    ):
+        """
+        Sending the header as a UUID (that happens to be the client's UUID PK)
+        resolves via the canonical UUID path, not via legacy_key_id.
+        Guards the "existing UUID clients are unaffected" invariant.
+        """
+        signer = RequestSigner(
+            client_id=legacy_hmac_client.client_id,
+            secret_key='legacy-mobile-secret'
+        )
+        auth_header = signer.sign_post('/boost/', '{"x": 1}')
+
+        handler = HMACHandler(clean_db)
+        client = handler.authenticate(
+            auth_header=auth_header,
+            method='POST',
+            path='/boost/',
+            body='{"x": 1}'
+        )
+
+        assert client is not None
+        assert client.client_id == legacy_hmac_client.client_id
+
+    def test_authenticate_consumes_the_tls_cache(self, clean_db, legacy_hmac_client):
+        """
+        On the happy path, HMACHandler.authenticate returns the Client stashed
+        during get_secret and clears the TLS cache — proving it did not perform
+        a second DB lookup. Guards the TOCTOU fix.
+        """
+        signer = RequestSigner(
+            client_id='podcastguru-mobile', secret_key='legacy-mobile-secret'
+        )
+        auth_header = signer.sign_post('/boost/', '{}')
+
+        handler = HMACHandler(clean_db)
+        client = handler.authenticate(
+            auth_header=auth_header, method='POST', path='/boost/', body='{}'
+        )
+        assert client is not None
+        # Cache was consumed by authenticate — a second read returns None.
+        assert handler.secret_provider.take_last_resolved('podcastguru-mobile') is None
+
+    def test_unknown_uuid_header_does_not_fall_through_to_legacy(self, clean_db):
+        """
+        A UUID-shaped header that isn't in the DB must NOT then be tried as a
+        legacy_key_id. Dispatch is one-shot on shape, not a two-step fallback.
+        """
+        # Register a legacy client whose legacy_key_id happens to be a valid UUID string
+        uuid_shaped_alias = '00000000-0000-0000-0000-999999999999'
+        client = Client.create_new(
+            client_name='Alias Client',
+            shared_secret='sec',
+            legacy_key_id=uuid_shaped_alias,
+        )
+        clean_db.save_client(client)
+
+        signer = RequestSigner(client_id=uuid_shaped_alias, secret_key='sec')
+        auth_header = signer.sign_post('/x/', '{}')
+
+        handler = HMACHandler(clean_db)
+        result = handler.authenticate(
+            auth_header=auth_header, method='POST', path='/x/', body='{}'
+        )
+        # UUID-shaped → hits UUID path → miss (that UUID isn't a real client_id).
+        # No fallback to legacy_key_id lookup.
+        assert result is None
 
 
 class TestRequestSigner:

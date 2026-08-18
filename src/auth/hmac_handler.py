@@ -1,6 +1,8 @@
 """
 HMAC authentication handler using byteforge-hmac library.
 """
+import re
+import threading
 from typing import Optional, Dict
 from byteforge_hmac import (
     HMACAuthenticator,
@@ -12,11 +14,61 @@ from src.database.driver import AuthServiceDB
 from api_gatekeeper_models import Client
 
 
+# Only the canonical 8-4-4-4-12 hyphenated hex form is treated as a UUID.
+# Python's uuid.UUID accepts braces, urn: prefix, and 32-char no-dash forms,
+# which would route ambiguous legacy strings to the wrong lookup path.
+_CANONICAL_UUID_RE = re.compile(
+    r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+)
+
+
+def _looks_like_uuid(value: str) -> bool:
+    """Strict canonical-form check: 36 chars, 8-4-4-4-12 hex with hyphens."""
+    return isinstance(value, str) and bool(_CANONICAL_UUID_RE.match(value))
+
+
+def _resolve_client(db: AuthServiceDB, header_client_id: str) -> Optional[Client]:
+    """
+    Resolve the client referenced by the HMAC Authorization header.
+
+    Dispatches on whether the header's client_id is a canonical UUID:
+      - Canonical UUID → resolve via clients.client_id PK path.
+      - Anything else → resolve via clients.legacy_key_id (fallback for
+        legacy callers built against the old rba-auth-service, e.g. the
+        PodcastGuru mobile app whose client_id is "podcastguru-mobile").
+
+    A canonical UUID-shaped header_client_id NEVER touches the legacy path,
+    so the UUID flow is untouched. Non-canonical UUID-ish forms (braces,
+    urn:uuid: prefix, 32-char no-dash) fall through to legacy_key_id lookup,
+    which is what a legacy caller sending those exact strings would want.
+
+    Args:
+        db: Database driver instance
+        header_client_id: Raw client_id string parsed from the Authorization
+            header
+
+    Returns:
+        Matching Client if found, None otherwise
+    """
+    if _looks_like_uuid(header_client_id):
+        return db.load_client_by_id(header_client_id)
+    return db.load_client_by_legacy_key_id(header_client_id)
+
+
 class DatabaseSecretProvider(SecretProvider):
     """
     Secret provider that fetches client secrets from database.
 
-    Integrates byteforge-hmac with our database layer.
+    Integrates byteforge-hmac with our database layer. Accepts both the
+    canonical UUID client_id and the legacy string identifier — see
+    _resolve_client for the dispatch rule.
+
+    Caches the resolved Client on a thread-local slot during get_secret so
+    HMACHandler.authenticate can return the exact Client whose secret
+    verified the signature — without a second DB lookup, and without a
+    TOCTOU window in which an admin reassigning a legacy_key_id between
+    the two lookups would swap the authenticated identity underneath us.
+    Safe under gunicorn threaded / gthread workers.
     """
 
     def __init__(self, db: AuthServiceDB):
@@ -27,20 +79,43 @@ class DatabaseSecretProvider(SecretProvider):
             db: Database driver instance
         """
         self.db = db
+        self._tls = threading.local()
 
     def get_secret(self, client_id: str) -> Optional[str]:
         """
         Get the shared secret for a client.
 
         Args:
-            client_id: Client identifier
+            client_id: Client identifier from the Authorization header
+                (may be a UUID or a legacy_key_id string)
 
         Returns:
             Shared secret if client exists and has one, None otherwise
         """
-        client = self.db.load_client_by_id(client_id)
+        client = _resolve_client(self.db, client_id)
+        # Stash under a header-id-keyed slot so take_last_resolved can only
+        # hand back the Client whose secret was returned for this exact
+        # header value on this thread.
+        self._tls.cached_client_id = client_id
+        self._tls.cached_client = client
         if client and client.shared_secret:
             return client.shared_secret
+        return None
+
+    def take_last_resolved(self, client_id: str) -> Optional[Client]:
+        """
+        Return the Client from the most recent get_secret call on this
+        thread, iff its header client_id matches. Clears the cache on read.
+
+        Returns None if nothing is cached or the cached header doesn't match
+        (e.g. get_secret was never called for this request).
+        """
+        cached_id = getattr(self._tls, 'cached_client_id', None)
+        cached_client = getattr(self._tls, 'cached_client', None)
+        self._tls.cached_client_id = None
+        self._tls.cached_client = None
+        if cached_id == client_id:
+            return cached_client
         return None
 
 
@@ -123,9 +198,16 @@ class HMACHandler:
             if not is_valid:
                 return None
 
-            # Authentication succeeded - load and return the client
-            client = self.db.load_client_by_id(auth_request.client_id)
-            return client
+            # Return the Client stashed by get_secret during signature
+            # verification — same object whose shared_secret validated the
+            # signature. This avoids a second DB lookup and closes the TOCTOU
+            # window in which a legacy_key_id could be reassigned between the
+            # two lookups. The take_last_resolved fallback to a fresh lookup
+            # is purely defensive; on the happy path it is never reached.
+            resolved = self.secret_provider.take_last_resolved(auth_request.client_id)
+            if resolved is not None:
+                return resolved
+            return _resolve_client(self.db, auth_request.client_id)
 
         except Exception:
             # Authentication failed (invalid format, expired timestamp, replay, etc.)
