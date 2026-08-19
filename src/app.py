@@ -130,6 +130,25 @@ def _create_hmac_handler(db, redis_client):
     Uses Redis for nonce storage in production (multi-instance safe).
     Falls back to in-memory dict for local development.
 
+    Redis TTL is coupled to timestamp_tolerance: byteforge's
+    TimestampValidator accepts |now - signed_timestamp| <= tolerance
+    symmetrically, so a request signed at time T is replayable across the
+    window [T-tolerance, T+tolerance] — total width 2*tolerance. The nonce
+    MUST persist for that full window or a captured request replays in
+    the gap between Redis eviction and TimestampValidator rejection.
+    2*tolerance is the exact minimum, not a margin — bump the multiplier
+    if you want slack.
+
+    Nonce check-and-store is NOT atomic in byteforge 0.1.3: __contains__
+    then __setitem__ are two Redis round trips (EXISTS then SETEX), so
+    two workers processing the same captured request concurrently in the
+    microsecond window between calls can both accept it. Ticket 68936741
+    tracks the 0.2.0 fix (SET NX EX single primitive). For HMAC-protected
+    routes today (boost writes on boost.podcastguru.io), the impact of a
+    2x replay is data-quality — a duplicate boost row — not a financial
+    double-spend, since Lightning payment settlement is upstream of the
+    metadata write. Tolerable until 0.2.0 lands.
+
     Args:
         db: Database driver instance
         redis_client: Redis client instance or None
@@ -137,14 +156,23 @@ def _create_hmac_handler(db, redis_client):
     Returns:
         HMACHandler instance
     """
+    # Single source of truth for the replay window — passed to both the
+    # authenticator (accept-window) and the Redis store (retention). Do NOT
+    # let these two drift.
+    timestamp_tolerance = 300
+
     if redis_client:
-        nonce_storage = RedisNonceStorage(redis_client)
+        nonce_storage = RedisNonceStorage(redis_client, ttl=timestamp_tolerance * 2)
         logger.info("HMAC handler initialized with Redis nonce storage (replay protection enabled)")
     else:
         nonce_storage = {}
         logger.warning("HMAC handler using in-memory nonce storage (not safe for multi-instance)")
 
-    return HMACHandler(db, nonce_storage=nonce_storage)
+    return HMACHandler(
+        db,
+        timestamp_tolerance=timestamp_tolerance,
+        nonce_storage=nonce_storage
+    )
 
 
 def create_app(

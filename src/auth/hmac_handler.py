@@ -1,6 +1,7 @@
 """
 HMAC authentication handler using byteforge-hmac library.
 """
+import logging
 import re
 import threading
 from typing import Optional, Dict
@@ -12,6 +13,8 @@ from byteforge_hmac import (
 
 from src.database.driver import AuthServiceDB
 from api_gatekeeper_models import Client
+
+logger = logging.getLogger(__name__)
 
 
 # Only the canonical 8-4-4-4-12 hyphenated hex form is treated as a UUID.
@@ -210,7 +213,17 @@ class HMACHandler:
             return _resolve_client(self.db, auth_request.client_id)
 
         except Exception:
-            # Authentication failed (invalid format, expired timestamp, replay, etc.)
+            # Real auth failures (bad signature, expired timestamp, replay)
+            # return False from authenticator.authenticate rather than raising.
+            # Any exception reaching here is a bug in the verification stack
+            # (byteforge lib, storage backend, or our own code). Log with
+            # traceback so a silent swallow can't hide it — the byteforge_hmac
+            # 0.1.2 ReplayProtector crash ate 24h of traffic in exactly this
+            # gap when this clause returned None with no output.
+            logger.warning(
+                "HMACHandler.authenticate raised — treating as auth failure",
+                exc_info=True
+            )
             return None
 
     def get_client_id_from_header(self, auth_header: str) -> Optional[str]:

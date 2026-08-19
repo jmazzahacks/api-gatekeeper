@@ -440,6 +440,101 @@ class TestHMACHandler:
         assert client.client_id == hmac_client.client_id
 
 
+class TestHMACHandlerExceptionLogging:
+    """
+    Regression for the byteforge_hmac 0.1.2 silent-swallow: an exception in
+    the byteforge verification path (storage backend, protocol mismatch,
+    etc.) used to be eaten by HMACHandler's bare `except Exception:` with
+    no log line. 24h prod outage before anyone noticed. This test locks
+    in the new behavior — return None AND emit a WARNING with traceback.
+    """
+
+    def test_logs_when_authenticator_raises(self, clean_db, caplog):
+        import logging
+        handler = HMACHandler(clean_db)
+        # Force an exception inside the verify path by pointing at a
+        # storage object that will raise on the first internal access.
+        class Boom:
+            def __contains__(self, k):
+                raise RuntimeError("simulated storage crash")
+            def __setitem__(self, k, v):
+                raise RuntimeError("simulated storage crash")
+        handler.authenticator.replay_protector.storage = Boom()
+
+        # Real client + valid signature so we reach the replay-protector step.
+        client = Client.create_new(
+            client_name='Boom Test Client',
+            shared_secret='boom-secret',
+            status=ClientStatus.ACTIVE,
+        )
+        clean_db.save_client(client)
+        signer = RequestSigner(client_id=client.client_id, secret_key='boom-secret')
+        auth_header = signer.sign_post('/api/test', '{}')
+
+        with caplog.at_level(logging.WARNING, logger='src.auth.hmac_handler'):
+            result = handler.authenticate(
+                auth_header=auth_header,
+                method='POST',
+                path='/api/test',
+                body='{}',
+            )
+
+        assert result is None
+        matching = [r for r in caplog.records
+                    if r.name == 'src.auth.hmac_handler' and 'raised' in r.message]
+        assert matching, "expected a WARNING log from HMACHandler when the verify path raises"
+        assert matching[0].exc_info is not None, "traceback must be attached to the log record"
+
+
+class TestHMACHandlerRedisStorageCompatibility:
+    """
+    Regression for the byteforge_hmac 0.1.2 crash: the library's
+    ReplayProtector called `.items()` on the nonce store, which our
+    RedisNonceStorage (minimal `__contains__` + `__setitem__` shape) did
+    not implement — silent AttributeError under a bare except. Fixed
+    upstream in 0.1.3; this test guards against a future regression.
+    """
+
+    def test_authenticates_with_minimal_storage_backend(self, clean_db):
+        """
+        A backend implementing ONLY __contains__ + __setitem__ (the
+        shape RedisNonceStorage uses) must not blow up the verify path
+        for valid signatures. Pre-0.1.3 this raised AttributeError.
+        """
+        class MinimalStorage:
+            def __init__(self):
+                self._d = {}
+            def __contains__(self, key):
+                return key in self._d
+            def __setitem__(self, key, value):
+                self._d[key] = value
+
+        storage = MinimalStorage()
+        handler = HMACHandler(clean_db, nonce_storage=storage)
+
+        client = Client.create_new(
+            client_name='Redis Compat Client',
+            shared_secret='redis-compat-secret',
+            status=ClientStatus.ACTIVE,
+        )
+        clean_db.save_client(client)
+        signer = RequestSigner(client_id=client.client_id, secret_key='redis-compat-secret')
+        auth_header = signer.sign_post('/api/test', '{}')
+
+        result = handler.authenticate(
+            auth_header=auth_header,
+            method='POST',
+            path='/api/test',
+            body='{}',
+        )
+
+        assert result is not None
+        assert result.client_id == client.client_id
+        # The storage identity must NOT have been replaced by the library
+        # (pre-0.1.3 `self.storage = {...}` clobbered non-dict backends).
+        assert isinstance(handler.authenticator.replay_protector.storage, MinimalStorage)
+
+
 class TestLooksLikeUUID:
     """Guard the strict-canonical UUID recognizer used to dispatch HMAC lookup."""
 
