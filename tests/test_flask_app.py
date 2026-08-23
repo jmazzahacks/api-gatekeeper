@@ -748,6 +748,240 @@ class TestAuthzEndpointCorsPreflight:
         assert response.headers['Access-Control-Allow-Origin'] == 'https://allowed.example.com'
         assert response.headers['Vary'] == 'Origin'
 
+    def test_bare_options_no_origin_falls_through_to_method_policy(self, cors_client, clean_db):
+        # A CORS preflight always carries both Origin and
+        # Access-Control-Request-Method. An OPTIONS with neither is a
+        # non-browser caller (curl, health probe) and must be evaluated
+        # against the route's method policy — not silently denied by the
+        # CORS allowlist gate.
+        # Regression for ticket 3fb82016 (2026-08-19).
+        route = Route.create_new(
+            route_pattern='/api/cors-test',
+            domain='*',
+            service_name='test-service',
+            methods={
+                HttpMethod.POST: MethodAuth(auth_required=True, auth_type=AuthType.API_KEY),
+                HttpMethod.GET: MethodAuth(auth_required=False),
+                HttpMethod.OPTIONS: MethodAuth(auth_required=False),
+            },
+        )
+        clean_db.save_route(route)
+
+        response = cors_client.get(
+            '/authz',
+            headers={
+                'X-Original-URI': '/api/cors-test',
+                'X-Original-Method': 'OPTIONS',
+                # no X-Original-Origin, no Access-Control-Request-Method
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.data == b''
+
+    def test_bare_options_no_options_in_method_policy_denies(self, cors_client, clean_db):
+        # Same shape as above but the route has NO OPTIONS entry. Falls
+        # through to method-policy which returns method_not_configured.
+        # Confirms the fall-through path routes to the authorizer instead
+        # of being caught by the CORS branch.
+        route = Route.create_new(
+            route_pattern='/api/cors-test',
+            domain='*',
+            service_name='test-service',
+            methods={
+                HttpMethod.POST: MethodAuth(auth_required=True, auth_type=AuthType.API_KEY),
+                HttpMethod.GET: MethodAuth(auth_required=False),
+            },
+        )
+        clean_db.save_route(route)
+
+        response = cors_client.get(
+            '/authz',
+            headers={
+                'X-Original-URI': '/api/cors-test',
+                'X-Original-Method': 'OPTIONS',
+            },
+        )
+
+        assert response.status_code == 403
+        # Assert the reason positively — the bug was specifically
+        # cors_origin_not_allowed coming back here, and a bare
+        # `not in response.data` would also pass on an empty body.
+        assert response.data == b'method_not_configured'
+
+    def test_bare_options_on_protected_route_requires_credentials(self, cors_client, clean_db):
+        # The auth boundary on the new fall-through path: a route whose
+        # OPTIONS entry requires auth must still deny an uncredentialed
+        # bare OPTIONS. Moving OPTIONS onto the authorizer path must not
+        # mean OPTIONS skips authentication.
+        route = Route.create_new(
+            route_pattern='/api/cors-guarded',
+            domain='*',
+            service_name='test-service',
+            methods={
+                HttpMethod.OPTIONS: MethodAuth(auth_required=True, auth_type=AuthType.API_KEY),
+            },
+        )
+        clean_db.save_route(route)
+
+        response = cors_client.get(
+            '/authz',
+            headers={
+                'X-Original-URI': '/api/cors-guarded',
+                'X-Original-Method': 'OPTIONS',
+            },
+        )
+
+        assert response.status_code == 403
+        assert response.data == b'invalid_credentials'
+
+    def test_bare_options_on_protected_route_allows_valid_credentials(self, cors_client, clean_db):
+        # Converse of the above: with a valid key and an OPTIONS grant, the
+        # bare OPTIONS is authorized like any other method.
+        route = Route.create_new(
+            route_pattern='/api/cors-guarded',
+            domain='*',
+            service_name='test-service',
+            methods={
+                HttpMethod.OPTIONS: MethodAuth(auth_required=True, auth_type=AuthType.API_KEY),
+            },
+        )
+        clean_db.save_route(route)
+
+        test_client = Client.create_new(
+            client_name='Options Client',
+            api_key='options-key-123',
+            status=ClientStatus.ACTIVE,
+        )
+        clean_db.save_client(test_client)
+
+        permission = ClientPermission.create_new(
+            client_id=test_client.client_id,
+            route_id=route.route_id,
+            allowed_methods=[HttpMethod.OPTIONS],
+        )
+        clean_db.save_permission(permission)
+
+        response = cors_client.get(
+            '/authz',
+            headers={
+                'X-Original-URI': '/api/cors-guarded',
+                'X-Original-Method': 'OPTIONS',
+                'Authorization': 'Bearer options-key-123',
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.headers['X-Auth-Client-ID'] == test_client.client_id
+
+    def test_preflight_for_unconfigured_method_denied(self, cors_client, clean_db):
+        # A preflight only gets a 200 for a method the route actually
+        # configures. Without this the preflight branch answered "yes" for
+        # any Access-Control-Request-Method on any matched route, since it
+        # never consults the method policy — so an allowlisted origin could
+        # get an unauthenticated OPTIONS proxied upstream for a method the
+        # route does not expose at all.
+        route = Route.create_new(
+            route_pattern='/api/cors-test',
+            domain='*',
+            service_name='test-service',
+            methods={HttpMethod.GET: MethodAuth(auth_required=False)},
+        )
+        clean_db.save_route(route)
+
+        response = cors_client.get(
+            '/authz',
+            headers={
+                'X-Original-URI': '/api/cors-test',
+                'X-Original-Method': 'OPTIONS',
+                'X-Original-Origin': 'https://allowed.example.com',
+                'Access-Control-Request-Method': 'DELETE',
+            },
+        )
+
+        assert response.status_code == 403
+        assert response.data == b'method_not_configured'
+        assert 'Access-Control-Allow-Origin' not in response.headers
+
+    def test_preflight_for_unknown_method_denied(self, cors_client, clean_db):
+        # Access-Control-Request-Method naming something outside HttpMethod
+        # must not raise — it's a denial, same as an unconfigured method.
+        route = Route.create_new(
+            route_pattern='/api/cors-test',
+            domain='*',
+            service_name='test-service',
+            methods={HttpMethod.GET: MethodAuth(auth_required=False)},
+        )
+        clean_db.save_route(route)
+
+        response = cors_client.get(
+            '/authz',
+            headers={
+                'X-Original-URI': '/api/cors-test',
+                'X-Original-Method': 'OPTIONS',
+                'X-Original-Origin': 'https://allowed.example.com',
+                'Access-Control-Request-Method': 'PROPFIND',
+            },
+        )
+
+        assert response.status_code == 403
+        assert response.data == b'method_not_configured'
+
+    def test_preflight_origin_gate_precedes_method_gate(self, cors_client, clean_db):
+        # Ordering matters for information disclosure: a non-allowlisted
+        # origin must be turned away before it can probe which methods a
+        # route exposes.
+        route = Route.create_new(
+            route_pattern='/api/cors-test',
+            domain='*',
+            service_name='test-service',
+            methods={HttpMethod.GET: MethodAuth(auth_required=False)},
+        )
+        clean_db.save_route(route)
+
+        response = cors_client.get(
+            '/authz',
+            headers={
+                'X-Original-URI': '/api/cors-test',
+                'X-Original-Method': 'OPTIONS',
+                'X-Original-Origin': 'https://evil.example.com',
+                'Access-Control-Request-Method': 'DELETE',
+            },
+        )
+
+        assert response.status_code == 403
+        assert response.data == b'cors_origin_not_allowed'
+
+    def test_options_with_origin_but_no_acrm_falls_through(self, cors_client, clean_db):
+        # Origin present but Access-Control-Request-Method missing is not a
+        # preflight per spec (missing the "what method am I about to send?"
+        # signal). Treat as ordinary OPTIONS and defer to method policy.
+        route = Route.create_new(
+            route_pattern='/api/cors-test',
+            domain='*',
+            service_name='test-service',
+            methods={
+                HttpMethod.OPTIONS: MethodAuth(auth_required=False),
+            },
+        )
+        clean_db.save_route(route)
+
+        response = cors_client.get(
+            '/authz',
+            headers={
+                'X-Original-URI': '/api/cors-test',
+                'X-Original-Method': 'OPTIONS',
+                'X-Original-Origin': 'https://allowed.example.com',
+                # no Access-Control-Request-Method
+            },
+        )
+
+        assert response.status_code == 200
+        # Not a preflight, so the CORS-specific Allow-Methods / Max-Age
+        # headers should NOT be stamped by _handle_cors_preflight.
+        assert 'Access-Control-Allow-Methods' not in response.headers
+        assert 'Access-Control-Max-Age' not in response.headers
+
 
 class TestMetricsEndpoint:
     """Test /metrics endpoint (Prometheus metrics)."""

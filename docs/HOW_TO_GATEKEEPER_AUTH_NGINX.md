@@ -92,6 +92,9 @@ location = /auth {
     proxy_set_header Authorization $http_authorization;
     proxy_set_header X-Original-Query $query_string;
     proxy_set_header X-Original-User-Agent $http_user_agent;
+    # Required for CORS. Without it gatekeeper sees no Origin and
+    # treats every browser preflight as a plain OPTIONS.
+    proxy_set_header X-Original-Origin $http_origin;
 }
 ```
 
@@ -217,6 +220,9 @@ server {
         proxy_set_header Authorization $http_authorization;
         proxy_set_header X-Original-Query $query_string;
         proxy_set_header X-Original-User-Agent $http_user_agent;
+        # Required for CORS. Without it gatekeeper sees no Origin and
+        # treats every browser preflight as a plain OPTIONS.
+        proxy_set_header X-Original-Origin $http_origin;
     }
 
     # Protected service
