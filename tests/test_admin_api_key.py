@@ -26,7 +26,7 @@ def admin_key_client(clean_db, monkeypatch):
     """App configured with GATEKEEPER_ADMIN_API_KEY set; Aegis NOT mocked."""
     monkeypatch.setenv('GATEKEEPER_ADMIN_API_KEY', ADMIN_KEY)
     monkeypatch.setenv('AEGIS_API_URL', 'https://aegis.test')
-    hmac_handler = HMACHandler(clean_db, nonce_storage={})
+    hmac_handler = HMACHandler(clean_db)
     app = create_app(db=clean_db, redis_client=None, hmac_handler=hmac_handler, rate_limiter=None)
     app.config['TESTING'] = True
     with app.test_client() as client:
@@ -111,7 +111,7 @@ class TestAdminKeyAuthFailures:
         accept any X-Gatekeeper-Admin-Key value — including an empty one."""
         monkeypatch.delenv('GATEKEEPER_ADMIN_API_KEY', raising=False)
         monkeypatch.setenv('AEGIS_API_URL', 'https://aegis.test')
-        hmac_handler = HMACHandler(clean_db, nonce_storage={})
+        hmac_handler = HMACHandler(clean_db)
         app = create_app(db=clean_db, redis_client=None, hmac_handler=hmac_handler, rate_limiter=None)
         app.config['TESTING'] = True
         with app.test_client() as client:
@@ -125,7 +125,7 @@ class TestAdminKeyAuthFailures:
         value before compare; empty after strip means 'no key configured'."""
         monkeypatch.setenv('GATEKEEPER_ADMIN_API_KEY', '   ')
         monkeypatch.setenv('AEGIS_API_URL', 'https://aegis.test')
-        hmac_handler = HMACHandler(clean_db, nonce_storage={})
+        hmac_handler = HMACHandler(clean_db)
         app = create_app(db=clean_db, redis_client=None, hmac_handler=hmac_handler, rate_limiter=None)
         app.config['TESTING'] = True
         with app.test_client() as client:

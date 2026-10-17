@@ -44,7 +44,7 @@ def fake_tenant_client(monkeypatch):
 
 @pytest.fixture
 def auth_client(clean_db, fake_tenant_client):
-    hmac_handler = HMACHandler(clean_db, nonce_storage={})
+    hmac_handler = HMACHandler(clean_db)
     app = create_app(db=clean_db, redis_client=None, hmac_handler=hmac_handler, rate_limiter=None)
     app.config['TESTING'] = True
     with app.test_client() as flask_client:

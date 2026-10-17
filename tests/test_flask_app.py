@@ -16,7 +16,7 @@ def client(clean_db):
     """Flask test client with test database."""
     # Use in-memory nonce storage for tests (no Redis dependency)
     # Explicitly pass redis_client=None to avoid connecting to real Redis
-    hmac_handler = HMACHandler(clean_db, nonce_storage={})
+    hmac_handler = HMACHandler(clean_db)
     app = create_app(db=clean_db, redis_client=None, hmac_handler=hmac_handler, rate_limiter=None)
     app.config['TESTING'] = True
     with app.test_client() as client:
@@ -26,7 +26,7 @@ def client(clean_db):
 @pytest.fixture
 def cors_client(clean_db):
     """Flask test client with a CORS allowlist configured."""
-    hmac_handler = HMACHandler(clean_db, nonce_storage={})
+    hmac_handler = HMACHandler(clean_db)
     app = create_app(db=clean_db, redis_client=None, hmac_handler=hmac_handler, rate_limiter=None)
     app.config['TESTING'] = True
     app.config['CORS_ALLOWED_ORIGINS'] = frozenset({'https://allowed.example.com'})
@@ -91,7 +91,7 @@ class TestHealthEndpoint:
         mock_redis = Mock()
         mock_redis.ping.return_value = True
 
-        hmac_handler = HMACHandler(clean_db, nonce_storage={})
+        hmac_handler = HMACHandler(clean_db)
         app = create_app(db=clean_db, redis_client=mock_redis, hmac_handler=hmac_handler, rate_limiter=None)
         app.config['TESTING'] = True
 
@@ -113,7 +113,7 @@ class TestHealthEndpoint:
         mock_redis = Mock()
         mock_redis.ping.side_effect = redis.ConnectionError("Connection refused")
 
-        hmac_handler = HMACHandler(clean_db, nonce_storage={})
+        hmac_handler = HMACHandler(clean_db)
         app = create_app(db=clean_db, redis_client=mock_redis, hmac_handler=hmac_handler, rate_limiter=None)
         app.config['TESTING'] = True
 

@@ -61,7 +61,7 @@ def admin_client(clean_db, monkeypatch, fake_me):
     clean_db.create_admin(ConsoleAdmin.create_new(email=EMAIL, aegis_uuid=AEGIS_UUID))
     fake_me[BEARER_VALID] = _user()
 
-    hmac_handler = HMACHandler(clean_db, nonce_storage={})
+    hmac_handler = HMACHandler(clean_db)
     app = create_app(db=clean_db, redis_client=None, hmac_handler=hmac_handler, rate_limiter=None)
     app.config['TESTING'] = True
     with app.test_client() as client:

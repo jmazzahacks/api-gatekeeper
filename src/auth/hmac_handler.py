@@ -4,11 +4,12 @@ HMAC authentication handler using byteforge-hmac library.
 import logging
 import re
 import threading
-from typing import Optional, Dict
+from typing import Optional
 from byteforge_hmac import (
     HMACAuthenticator,
     AuthHeaderParser,
-    SecretProvider
+    SecretProvider,
+    NonceStorage
 )
 
 from src.database.driver import AuthServiceDB
@@ -137,15 +138,15 @@ class HMACHandler:
         self,
         db: AuthServiceDB,
         timestamp_tolerance: int = 300,
-        nonce_storage: Optional[Dict[str, int]] = None
-    ):
+        nonce_storage: Optional[NonceStorage] = None
+    ) -> None:
         """
         Initialize the HMAC handler.
 
         Args:
             db: Database driver instance
             timestamp_tolerance: How many seconds old/future timestamps are accepted (default: 5 minutes)
-            nonce_storage: Optional dictionary for nonce replay protection.
+            nonce_storage: Optional atomic nonce store for replay protection.
                           For production with multiple servers, use Redis.
         """
         self.db = db
@@ -153,7 +154,7 @@ class HMACHandler:
         self.authenticator = HMACAuthenticator(
             secret_provider=self.secret_provider,
             timestamp_tolerance=timestamp_tolerance,
-            nonce_storage=nonce_storage if nonce_storage is not None else {}
+            nonce_storage=nonce_storage
         )
 
     def authenticate(

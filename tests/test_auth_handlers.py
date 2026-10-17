@@ -487,27 +487,19 @@ class TestHMACHandlerExceptionLogging:
 
 
 class TestHMACHandlerRedisStorageCompatibility:
-    """
-    Regression for the byteforge_hmac 0.1.2 crash: the library's
-    ReplayProtector called `.items()` on the nonce store, which our
-    RedisNonceStorage (minimal `__contains__` + `__setitem__` shape) did
-    not implement — silent AttributeError under a bare except. Fixed
-    upstream in 0.1.3; this test guards against a future regression.
-    """
+    """Ensure an atomic custom backend survives the full authentication path."""
 
-    def test_authenticates_with_minimal_storage_backend(self, clean_db):
-        """
-        A backend implementing ONLY __contains__ + __setitem__ (the
-        shape RedisNonceStorage uses) must not blow up the verify path
-        for valid signatures. Pre-0.1.3 this raised AttributeError.
-        """
+    def test_authenticates_with_minimal_storage_backend(self, clean_db) -> None:
         class MinimalStorage:
-            def __init__(self):
-                self._d = {}
-            def __contains__(self, key):
-                return key in self._d
-            def __setitem__(self, key, value):
+            def __init__(self) -> None:
+                self._d: dict[str, int] = {}
+
+            def put_if_absent(self, key: str, value: int, ttl_seconds: int) -> bool:
+                # Sequential test double; production uses atomic Redis SET.
+                if key in self._d:
+                    return False
                 self._d[key] = value
+                return True
 
         storage = MinimalStorage()
         handler = HMACHandler(clean_db, nonce_storage=storage)

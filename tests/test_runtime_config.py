@@ -17,7 +17,7 @@ def client_with_env(clean_db, monkeypatch):
     monkeypatch.setenv('SITE_NAME', 'gatekeeper-test')
     monkeypatch.setenv('SITE_DOMAIN', 'gatekeeper.test.example')
 
-    hmac_handler = HMACHandler(clean_db, nonce_storage={})
+    hmac_handler = HMACHandler(clean_db)
     app = create_app(db=clean_db, redis_client=None, hmac_handler=hmac_handler, rate_limiter=None)
     app.config['TESTING'] = True
     with app.test_client() as c:
@@ -30,7 +30,7 @@ def client_without_env(clean_db, monkeypatch):
     monkeypatch.delenv('SITE_NAME', raising=False)
     monkeypatch.delenv('SITE_DOMAIN', raising=False)
 
-    hmac_handler = HMACHandler(clean_db, nonce_storage={})
+    hmac_handler = HMACHandler(clean_db)
     app = create_app(db=clean_db, redis_client=None, hmac_handler=hmac_handler, rate_limiter=None)
     app.config['TESTING'] = True
     with app.test_client() as c:

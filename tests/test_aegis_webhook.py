@@ -74,7 +74,7 @@ def webhook_client(clean_db, monkeypatch):
     """Flask test client with webhook secret configured."""
     monkeypatch.setenv('AEGIS_WEBHOOK_SECRET', WEBHOOK_SECRET)
 
-    hmac_handler = HMACHandler(clean_db, nonce_storage={})
+    hmac_handler = HMACHandler(clean_db)
     app = create_app(db=clean_db, redis_client=None, hmac_handler=hmac_handler, rate_limiter=None)
     app.config['TESTING'] = True
     with app.test_client() as client:
@@ -86,7 +86,7 @@ def webhook_client_no_secret(clean_db, monkeypatch):
     """Flask test client with NO webhook secret configured (misconfiguration case)."""
     monkeypatch.delenv('AEGIS_WEBHOOK_SECRET', raising=False)
 
-    hmac_handler = HMACHandler(clean_db, nonce_storage={})
+    hmac_handler = HMACHandler(clean_db)
     app = create_app(db=clean_db, redis_client=None, hmac_handler=hmac_handler, rate_limiter=None)
     app.config['TESTING'] = True
     with app.test_client() as client:
