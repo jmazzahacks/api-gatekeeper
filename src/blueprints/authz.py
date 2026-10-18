@@ -3,20 +3,10 @@ Authorization endpoint blueprint.
 
 Handles nginx auth_request integration for API authorization.
 """
-import time
-import logging
 from typing import Optional
 from flask import Blueprint, request, make_response, current_app, Response
 from api_gatekeeper_models import HttpMethod, Route
-from src.utils import resolve_client_ip, resolve_allowed_origin
-from src.monitoring import (
-    AUTH_REQUESTS_TOTAL,
-    AUTH_DURATION_SECONDS,
-    AUTH_ERRORS_TOTAL
-)
-
-logger = logging.getLogger(__name__)
-
+from src.utils import resolve_allowed_origin
 authz_bp = Blueprint('authz', __name__)
 
 # Fallback for Access-Control-Allow-Headers when the browser's preflight
@@ -69,8 +59,6 @@ def authorize():
     route's OPTIONS method-policy entry does not override the CORS
     allowlist gate for real preflights.
     """
-    start_time = time.time()
-
     try:
         # Extract nginx forwarded headers
         original_uri = request.headers.get('X-Original-URI')
@@ -78,16 +66,7 @@ def authorize():
         original_host = request.headers.get('X-Original-Host', '')
         original_origin = request.headers.get('X-Original-Origin', '')
 
-        # Resolve client IP, accounting for trusted forwarders (e.g., upstream
-        # servers whose auth subrequests route through Cloudflare)
-        trusted_ips = current_app.config.get('TRUSTED_FORWARDER_IPS')
-        client_ip = resolve_client_ip(request, trusted_ips)
-
-        # Get user agent for logging (nginx forwards original via X-Original-User-Agent)
-        user_agent = request.headers.get('X-Original-User-Agent', 'unknown')
-
         if not original_uri or not original_method:
-            logger.warning("Missing X-Original-URI or X-Original-Method headers")
             return make_response('Missing required headers', 400)
 
         # Extract domain from host (strip port if present)
@@ -129,16 +108,12 @@ def authorize():
                 origin=original_origin,
                 requested_method=requested_method,
                 requested_headers=request.headers.get('Access-Control-Request-Headers', ''),
-                client_ip=client_ip,
-                user_agent=user_agent,
-                start_time=start_time,
             )
 
         # Convert method string to HttpMethod enum
         try:
             method = HttpMethod[original_method.upper()]
         except KeyError:
-            logger.warning(f"Invalid HTTP method: {original_method}")
             return make_response(f'Invalid method: {original_method}', 400)
 
         # Get request body for HMAC validation
@@ -158,12 +133,7 @@ def authorize():
             query_params=query_params if query_params else None
         )
 
-        # Calculate duration
-        duration = time.time() - start_time
-
-        # Use matched route ID for metrics labels, or a static placeholder
-        # for unmatched routes to prevent cardinality explosion from scanner paths
-        route_label = result.matched_route_id or '__unmatched__'
+        request.environ['gatekeeper.metric_route'] = result.matched_route_id or '__unmatched__'
 
         # Resolve CORS Allow-Origin once; applied to both 200 and 4xx responses
         # so the browser can read the body of authz failures (e.g. show a
@@ -172,33 +142,6 @@ def authorize():
         allowed_origin = resolve_allowed_origin(original_origin, allowlist)
 
         if result.allowed:
-            # Update metrics
-            AUTH_REQUESTS_TOTAL.labels(
-                result='allowed',
-                route_pattern=route_label,
-                method=method.value
-            ).inc()
-
-            AUTH_DURATION_SECONDS.labels(
-                route_pattern=route_label,
-                method=method.value
-            ).observe(duration)
-
-            # Structured logging
-            logger.info("Authorization result", extra={
-                'client_ip': client_ip,
-                'user_agent': user_agent,
-                'client_id': result.client_id or 'public',
-                'client_name': result.client_name,
-                'route': path,
-                'domain': domain,
-                'route_id': result.matched_route_id,
-                'method': original_method,
-                'allowed': True,
-                'reason': result.reason,
-                'duration_ms': round(duration * 1000, 2)
-            })
-
             response = make_response('', 200)
 
             # Pass client information to upstream service
@@ -212,59 +155,13 @@ def authorize():
             _apply_cors_actual_headers(response, allowed_origin)
             return response
         else:
-            # Update metrics
-            AUTH_REQUESTS_TOTAL.labels(
-                result='denied',
-                route_pattern=route_label,
-                method=method.value
-            ).inc()
-
-            AUTH_DURATION_SECONDS.labels(
-                route_pattern=route_label,
-                method=method.value
-            ).observe(duration)
-
-            # Structured logging
-            logger.warning("Authorization denied", extra={
-                'client_ip': client_ip,
-                'user_agent': user_agent,
-                'client_id': result.client_id,
-                'client_name': result.client_name,
-                'route': path,
-                'domain': domain,
-                'route_id': result.matched_route_id,
-                'method': original_method,
-                'allowed': False,
-                'reason': result.reason,
-                'duration_ms': round(duration * 1000, 2)
-            })
-
             # Return 429 for rate limit exceeded, 403 for other denials
             status_code = 429 if result.reason == 'rate_limit_exceeded' else 403
             response = make_response(result.reason, status_code)
             _apply_cors_actual_headers(response, allowed_origin)
             return response
 
-    except Exception as e:
-        duration = time.time() - start_time
-
-        # Track error
-        AUTH_ERRORS_TOTAL.labels(error_type=type(e).__name__).inc()
-
-        # Structured error logging
-        error_trusted_ips = current_app.config.get('TRUSTED_FORWARDER_IPS')
-        error_client_ip = resolve_client_ip(request, error_trusted_ips)
-        error_user_agent = request.headers.get('X-Original-User-Agent', 'unknown')
-        logger.error("Authorization error", extra={
-            'client_ip': error_client_ip,
-            'user_agent': error_user_agent,
-            'route': request.headers.get('X-Original-URI', 'unknown'),
-            'method': request.headers.get('X-Original-Method', 'unknown'),
-            'error_type': type(e).__name__,
-            'error_message': str(e),
-            'duration_ms': round(duration * 1000, 2)
-        }, exc_info=True)
-
+    except Exception:
         return make_response('Internal server error', 500)
 
 
@@ -274,9 +171,6 @@ def _handle_cors_preflight(
     origin: str,
     requested_method: str,
     requested_headers: str,
-    client_ip: str,
-    user_agent: str,
-    start_time: float,
 ) -> Response:
     """
     Build the CORS preflight response.
@@ -310,36 +204,13 @@ def _handle_cors_preflight(
 
     route: Optional[Route] = authorizer.find_best_route(path, domain)
 
-    duration = time.time() - start_time
-    route_label = route.route_id if route else '__unmatched__'
-
-    # Fields common to every outcome; each branch adds its own `reason`.
-    log_context = {
-        'client_ip': client_ip,
-        'user_agent': user_agent,
-        'route': path,
-        'domain': domain,
-        'origin': origin,
-        'method': 'OPTIONS',
-        'requested_method': requested_method,
-        'duration_ms': round(duration * 1000, 2),
-    }
-    if route is not None:
-        log_context['route_id'] = route.route_id
+    request.environ['gatekeeper.metric_route'] = route.route_id if route else '__unmatched__'
 
     if route is None:
-        _record_preflight_metrics('denied', route_label, duration)
-        logger.warning("CORS preflight denied", extra={
-            **log_context, 'allowed': False, 'reason': 'no_route_match',
-        })
         return make_response('no_route_match', 403)
 
     allowed_origin = resolve_allowed_origin(origin, allowlist)
     if allowed_origin is None:
-        _record_preflight_metrics('denied', route_label, duration)
-        logger.warning("CORS preflight denied", extra={
-            **log_context, 'allowed': False, 'reason': 'cors_origin_not_allowed',
-        })
         return make_response('cors_origin_not_allowed', 403)
 
     # Approve only a preflight for a method this route actually configures.
@@ -354,10 +225,6 @@ def _handle_cors_preflight(
         preflight_method = None
 
     if preflight_method is None or route.get_auth_requirements(preflight_method) is None:
-        _record_preflight_metrics('denied', route_label, duration)
-        logger.warning("CORS preflight denied", extra={
-            **log_context, 'allowed': False, 'reason': 'method_not_configured',
-        })
         return make_response('method_not_configured', 403)
 
     allowed_methods = sorted({m.value for m in route.methods.keys()} | {'OPTIONS'})
@@ -370,29 +237,7 @@ def _handle_cors_preflight(
     response.headers['Access-Control-Max-Age'] = _PREFLIGHT_MAX_AGE
     response.headers['Vary'] = 'Origin'
 
-    _record_preflight_metrics('allowed', route_label, duration)
-    logger.info("CORS preflight allowed", extra={
-        **log_context, 'allowed': True, 'reason': 'cors_preflight',
-    })
     return response
-
-
-def _record_preflight_metrics(result: str, route_label: str, duration: float) -> None:
-    """
-    Record the request-count and duration metrics for a preflight outcome.
-
-    Args:
-        result: 'allowed' or 'denied' (the AUTH_REQUESTS_TOTAL label)
-        route_label: matched route_id, or '__unmatched__' to keep the label
-            cardinality bounded on scanner traffic
-        duration: seconds elapsed since the request started
-    """
-    AUTH_REQUESTS_TOTAL.labels(
-        result=result, route_pattern=route_label, method='OPTIONS'
-    ).inc()
-    AUTH_DURATION_SECONDS.labels(
-        route_pattern=route_label, method='OPTIONS'
-    ).observe(duration)
 
 
 def _apply_cors_actual_headers(response: Response, allowed_origin: Optional[str]) -> None:

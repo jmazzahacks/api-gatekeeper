@@ -109,10 +109,13 @@ class AuthServiceDB:
     def _record_pool_metrics(self) -> None:
         """Update active/idle pool gauges. Swallows metric backend errors."""
         try:
-            DB_CONNECTION_POOL.labels(state='active').set(self._active_connections)
-            DB_CONNECTION_POOL.labels(state='idle').set(
-                self._max_conn - self._active_connections
-            )
+            # psycopg2 exposes no public pool statistics API. Snapshot its
+            # bookkeeping under the same lock used by getconn/putconn.
+            with self.pool._lock:
+                active = len(self.pool._used)
+                idle = len(self.pool._pool)
+            DB_CONNECTION_POOL.labels(state='active').set(active)
+            DB_CONNECTION_POOL.labels(state='idle').set(idle)
         except Exception:
             logger.exception("Failed to update DB pool metrics")
 

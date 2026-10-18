@@ -2,9 +2,9 @@
 Gunicorn configuration for API Gatekeeper.
 
 This file is passed to gunicorn via `-c gunicorn_conf.py` so that the
-prometheus_client multiprocess collector can clean up per-worker shard files
-when a worker dies. Without this hook, dead-worker counter shards accumulate
-in PROMETHEUS_MULTIPROC_DIR forever and inflate aggregated values.
+prometheus_client multiprocess collector can remove live-gauge shards when
+a worker dies. Counter/histogram shards intentionally remain until the
+container startup cleanup so worker recycling does not reset cumulative totals.
 """
 from prometheus_client import multiprocess
 

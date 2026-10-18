@@ -10,9 +10,6 @@ from prometheus_client import (
     Counter, Histogram, Gauge, CollectorRegistry,
     generate_latest, multiprocess, CONTENT_TYPE_LATEST,
 )
-import time
-from functools import wraps
-from typing import Callable
 
 
 # Prometheus Metrics
@@ -26,7 +23,7 @@ AUTH_DURATION_SECONDS = Histogram(
     'auth_duration_seconds',
     'Authorization request duration in seconds',
     ['route_pattern', 'method'],
-    buckets=(0.001, 0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 1.0)
+    buckets=(0.001, 0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 1.0, 2.5, 3.0, 5.0, 10.0, 30.0)
 )
 
 AUTH_ERRORS_TOTAL = Counter(
@@ -46,61 +43,6 @@ DB_CONNECTION_POOL = Gauge(
     multiprocess_mode='livesum'
 )
 
-
-
-def track_auth_request(func: Callable) -> Callable:
-    """
-    Decorator to track authorization request metrics and timing.
-
-    Measures request duration and increments counters based on result.
-
-    Args:
-        func: View function to decorate
-
-    Returns:
-        Wrapped function with metrics tracking
-    """
-    @wraps(func)
-    def wrapper(*args, **kwargs):
-        start_time = time.time()
-
-        try:
-            response = func(*args, **kwargs)
-            duration = time.time() - start_time
-
-            # Extract route and method from request context
-            from flask import request
-            route = request.headers.get('X-Original-URI', 'unknown')
-            method = request.headers.get('X-Original-Method', 'unknown')
-
-            # Determine result from response status
-            result = 'allowed' if response[1] == 200 else 'denied'
-
-            # Update metrics
-            AUTH_REQUESTS_TOTAL.labels(
-                result=result,
-                route_pattern=route,
-                method=method
-            ).inc()
-
-            AUTH_DURATION_SECONDS.labels(
-                route_pattern=route,
-                method=method
-            ).observe(duration)
-
-            return response
-
-        except Exception as e:
-            duration = time.time() - start_time
-
-            # Track error
-            AUTH_ERRORS_TOTAL.labels(
-                error_type=type(e).__name__
-            ).inc()
-
-            raise
-
-    return wrapper
 
 
 def get_metrics():

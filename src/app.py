@@ -15,6 +15,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from byteforge_loki_logging import configure_logging
+from src.authz_tracing import AuthzTracingMiddleware, install_privacy_filter
 
 import redis
 from src.auth import Authorizer, HMACHandler, RedisNonceStorage, AegisAuthenticator
@@ -51,12 +52,14 @@ def _configure_logging_and_loggers(app: Flask) -> None:
         local_level=log_level,
     )
 
+    install_privacy_filter()
+
     # Flask's default app.logger has its own StreamHandler with propagate=False.
     # Clear it so that tracebacks from route handlers reach the root logger
     # (and therefore Loki) instead of dead-ending on stdout.
     app.logger.handlers.clear()
     app.logger.propagate = True
-    app.logger.setLevel(logging.DEBUG)
+    app.logger.setLevel(logging.NOTSET)
 
     # Same treatment for gunicorn + werkzeug loggers — they also create their
     # own StreamHandler with propagate=False and would bypass Loki otherwise.
@@ -294,6 +297,7 @@ def create_app(
     app.register_blueprint(auth_bp)
     app.register_blueprint(config_bp)
 
+    app.wsgi_app = AuthzTracingMiddleware(app.wsgi_app)
     return app
 
 
