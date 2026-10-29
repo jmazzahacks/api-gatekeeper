@@ -21,8 +21,8 @@ python-json-logger
 # Rate limiting
 redis
 
-# Centralized logging with Loki
-byteforge-loki-logging @ git+https://${CR_PAT}@github.com/jmazzahacks/byteforge-loki-logging.git
+# Centralized logging with Loki v0.1.11 (fork-safe master/worker queues)
+byteforge-loki-logging @ git+https://${CR_PAT}@github.com/jmazzahacks/byteforge-loki-logging.git@984adce49e806653dece1049cab7ce1d7172cc58
 
 # Shared models. Pinned to v0.8.0 (adds Client.legacy_key_id — an optional
 # non-UUID alternate identifier used to resolve legacy HMAC callers whose

@@ -39,10 +39,10 @@ def _configure_logging_and_loggers(app: Flask) -> None:
     Initialize byteforge-loki-logging and force Flask / werkzeug / gunicorn
     loggers to propagate to the root logger.
 
-    Must run inside create_app() (not at module level) so SSL state is created
-    post-fork in the gunicorn worker process. Also must run after `Flask(__name__)`
-    because Flask sets up app.logger during construction and would override an
-    earlier propagate flip.
+    Reconfigure inside create_app() to drain early worker boot records and
+    install worker-local handlers and the /authz privacy filter. The pinned
+    Loki library supports the master handler inherited across fork. Run after
+    Flask construction so its default logger also routes through these handlers.
     """
     debug_mode = os.environ.get('DEBUG_LOCAL', 'true').lower() == 'true'
     log_level = os.environ.get('LOG_LEVEL', 'INFO')

@@ -20,7 +20,7 @@ services:
     depends_on:
       - postgres  # Your existing postgres service name
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:7843/health"]
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:7843/health"]
       interval: 10s
       timeout: 5s
       retries: 3

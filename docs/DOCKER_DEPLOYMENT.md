@@ -501,3 +501,29 @@ This ensures `$remote_addr` (which reflects the real client IP after `set_real_i
 **Cause**: `REDIS_HOST` is set but Redis isn't reachable.
 
 **Fix**: Either ensure Redis is running and reachable, or remove `REDIS_HOST` from the environment to disable rate limiting.
+
+### Gunicorn lifecycle logging and optional keep-alive
+
+The image uses `gunicorn_conf.py` and `GatekeeperLogger` to route master startup,
+worker timeout, signal and shutdown messages to the same `api-gatekeeper` Loki
+application label as worker logs. `DEBUG_LOCAL` and `LOG_LEVEL` apply to both.
+The pinned byteforge-loki-logging v0.1.11 commit supplies fork-safe queues;
+do not downgrade it while master logging is enabled. Workers still configure
+application logging and the /authz privacy filter inside `create_app()`.
+Graceful worker/master exits drain logging for up to five seconds. Forced kills
+cannot guarantee delivery of pending logs. Loki connection failure falls back
+to stdout; missing required Loki configuration fails startup visibly.
+
+The default remains four sync workers. To opt into threaded workers and HTTP
+keep-alive, add this environment variable to the service:
+
+```yaml
+GUNICORN_CMD_ARGS: "--worker-class gthread --threads 4 --keep-alive 65"
+```
+
+These are example values: size threads against each worker's database pool and
+set Gunicorn keep-alive at least as long as nginx's upstream idle timeout.
+The nginx owner must also enable upstream keepalive and HTTP/1.1 with the
+appropriate Connection header configuration; changing the worker alone does
+not enable upstream reuse. Verify this configuration in an authorized environment
+before rollout. No production nginx configuration is changed by this repository.
